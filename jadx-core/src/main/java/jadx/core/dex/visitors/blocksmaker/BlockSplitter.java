@@ -6,6 +6,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.JumpInfo;
@@ -22,6 +25,7 @@ import jadx.core.utils.exceptions.JadxRuntimeException;
 
 public class BlockSplitter extends AbstractVisitor {
 
+	private static final Logger LOG = LoggerFactory.getLogger(BlockSplitter.class);
 	// leave these instructions alone in block node
 	private static final Set<InsnType> SEPARATE_INSNS = EnumSet.of(
 			InsnType.RETURN,
@@ -37,8 +41,6 @@ public class BlockSplitter extends AbstractVisitor {
 		if (mth.isNoCode()) {
 			return;
 		}
-		mth.checkInstructions();
-
 		mth.initBasicBlocks();
 		splitBasicBlocks(mth);
 		removeInsns(mth);
@@ -147,9 +149,13 @@ public class BlockSplitter extends AbstractVisitor {
 			for (InsnNode insn : block.getInstructions()) {
 				List<JumpInfo> jumps = insn.getAll(AType.JUMP);
 				for (JumpInfo jump : jumps) {
-					BlockNode srcBlock = getBlock(jump.getSrc(), blocksMap);
-					BlockNode thisBlock = getBlock(jump.getDest(), blocksMap);
-					connect(srcBlock, thisBlock);
+					try {
+						BlockNode srcBlock = getBlock(jump.getSrc(), blocksMap);
+						BlockNode thisBlock = getBlock(jump.getDest(), blocksMap);
+						connect(srcBlock, thisBlock);
+					} catch (Exception e) {
+						LOG.warn("Can't make connection for: {}", jump, e);
+					}
 				}
 				connectExceptionHandlers(blocksMap, block, insn);
 			}

@@ -1,5 +1,16 @@
 package jadx.core.dex.visitors.ssa;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.BitSet;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.PhiListAttr;
@@ -19,20 +30,14 @@ import jadx.core.utils.InstructionRemover;
 import jadx.core.utils.exceptions.JadxException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.BitSet;
-import java.util.Deque;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-
 @JadxVisitor(
 		name = "SSATransform",
 		desc = "Calculate Single Side Assign (SSA) variables",
 		runAfter = BlockFinish.class
 )
 public class SSATransform extends AbstractVisitor {
+
+	private static final Logger LOG = LoggerFactory.getLogger(SSATransform.class);
 
 	@Override
 	public void visit(MethodNode mth) throws JadxException {
@@ -165,10 +170,13 @@ public class SSATransform extends AbstractVisitor {
 					int regNum = reg.getRegNum();
 					SSAVar var = vars[regNum];
 					if (var == null) {
-						throw new JadxRuntimeException("Not initialized variable reg: " + regNum
-								+ ", insn: " + insn + ", block:" + block + ", method: " + mth);
+//						throw new JadxRuntimeException("Not initialized variable reg: " + regNum + ", insn: " + insn + ", block:" + block + ", method: " + mth);
+						LOG.warn("Not initialized variable reg: " + regNum + ", insn: " + insn + ", block:" + block + ", method: " + mth);
+						insn.add(AFlag.SKIP);
+						insn.add(AFlag.REMOVE);
+					} else {
+						var.use(reg);
 					}
-					var.use(reg);
 				}
 			}
 			RegisterArg result = insn.getResult();

@@ -6,6 +6,8 @@ import jadx.core.dex.instructions.args.InsnArg;
 import jadx.core.dex.instructions.args.RegisterArg;
 import jadx.core.dex.nodes.InsnNode;
 import jadx.core.utils.InsnUtils;
+import jadx.core.utils.exceptions.DecodeException;
+import jadx.core.utils.exceptions.JadxRuntimeException;
 
 import com.android.dx.io.instructions.DecodedInstruction;
 
@@ -28,6 +30,8 @@ public class ArithNode extends InsnNode {
 				// normal
 				addReg(insn, 1, type);
 				addLit(insn, type);
+			} else {
+				throw new JadxRuntimeException("ARITH " + op.name() + " has incorrect register count: " + rc + ", expected: 1 or 2");
 			}
 		} else {
 			if (rc == 2) {
@@ -38,6 +42,8 @@ public class ArithNode extends InsnNode {
 				// normal
 				addReg(insn, 1, type);
 				addReg(insn, 2, type);
+			} else {
+				throw new JadxRuntimeException("ARITH " + op.name() + " has incorrect register count: " + rc + ", expected: 2 or 3");
 			}
 		}
 	}

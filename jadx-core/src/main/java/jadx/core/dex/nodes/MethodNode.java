@@ -23,6 +23,7 @@ import jadx.core.dex.regions.Region;
 import jadx.core.dex.trycatch.ExcHandlerAttr;
 import jadx.core.dex.trycatch.ExceptionHandler;
 import jadx.core.dex.trycatch.TryCatchBlock;
+import jadx.core.utils.InstructionRemover;
 import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.DecodeException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
@@ -94,6 +95,7 @@ public class MethodNode extends LineAttrNode implements ILoadable, IDexNode {
 
 			DexNode dex = parentClass.dex();
 			Code mthCode = dex.readCode(methodData);
+			debugInfoOffset = mthCode.getDebugInfoOffset();
 			regsCount = mthCode.getRegistersSize();
 			initMethodTypes();
 
@@ -103,9 +105,6 @@ public class MethodNode extends LineAttrNode implements ILoadable, IDexNode {
 			codeSize = instructions.length;
 
 			initTryCatches(mthCode);
-			initJumps();
-
-			this.debugInfoOffset = mthCode.getDebugInfoOffset();
 		} catch (Exception e) {
 			if (!noCode) {
 				noCode = true;
@@ -114,28 +113,6 @@ public class MethodNode extends LineAttrNode implements ILoadable, IDexNode {
 				noCode = false;
 			}
 			throw new DecodeException(this, "Load method exception: " + e.getMessage(), e);
-		}
-	}
-
-	public void checkInstructions() {
-		List<RegisterArg> list = new ArrayList<>();
-		for (InsnNode insnNode : instructions) {
-			if (insnNode == null) {
-				continue;
-			}
-			list.clear();
-			RegisterArg resultArg = insnNode.getResult();
-			if (resultArg != null) {
-				list.add(resultArg);
-			}
-			insnNode.getRegisterArgs(list);
-			int argsCount = list.size();
-			for (int i = 0; i < argsCount; i++) {
-				if (list.get(i).getRegNum() >= regsCount) {
-					throw new JadxRuntimeException("Incorrect register number in instruction: " + insnNode
-							+ ", expected to be less than " + regsCount);
-				}
-			}
 		}
 	}
 
@@ -326,48 +303,6 @@ public class MethodNode extends LineAttrNode implements ILoadable, IDexNode {
 				insn.add(AFlag.TRY_LEAVE);
 			}
 		}
-	}
-
-	private void initJumps() {
-		InsnNode[] insnByOffset = instructions;
-		for (int offset = 0; offset < insnByOffset.length; offset++) {
-			InsnNode insn = insnByOffset[offset];
-			if (insn == null) {
-				continue;
-			}
-			switch (insn.getType()) {
-				case SWITCH:
-					SwitchNode sw = (SwitchNode) insn;
-					for (int target : sw.getTargets()) {
-						addJump(insnByOffset, offset, target);
-					}
-					// default case
-					int nextInsnOffset = InsnDecoder.getNextInsnOffset(insnByOffset, offset);
-					if (nextInsnOffset != -1) {
-						addJump(insnByOffset, offset, nextInsnOffset);
-					}
-					break;
-
-				case IF:
-					int next = InsnDecoder.getNextInsnOffset(insnByOffset, offset);
-					if (next != -1) {
-						addJump(insnByOffset, offset, next);
-					}
-					addJump(insnByOffset, offset, ((IfNode) insn).getTarget());
-					break;
-
-				case GOTO:
-					addJump(insnByOffset, offset, ((GotoNode) insn).getTarget());
-					break;
-
-				default:
-					break;
-			}
-		}
-	}
-
-	private static void addJump(InsnNode[] insnByOffset, int offset, int target) {
-		insnByOffset[target].addAttr(AType.JUMP, new JumpInfo(offset, target));
 	}
 
 	public String getName() {

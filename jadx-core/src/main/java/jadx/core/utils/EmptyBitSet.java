@@ -39,22 +39,18 @@ public final class EmptyBitSet extends BitSet {
 
 	@Override
 	public void set(int bitIndex) {
-		throw new UnsupportedOperationException();
 	}
 
 	@Override
 	public void set(int bitIndex, boolean value) {
-		throw new UnsupportedOperationException();
 	}
 
 	@Override
 	public void set(int fromIndex, int toIndex) {
-		throw new UnsupportedOperationException();
 	}
 
 	@Override
 	public void set(int fromIndex, int toIndex, boolean value) {
-		throw new UnsupportedOperationException();
 	}
 
 	@Override
@@ -69,12 +65,10 @@ public final class EmptyBitSet extends BitSet {
 
 	@Override
 	public void and(BitSet set) {
-		throw new UnsupportedOperationException();
 	}
 
 	@Override
 	public void or(BitSet set) {
-		throw new UnsupportedOperationException();
 	}
 
 	@Override

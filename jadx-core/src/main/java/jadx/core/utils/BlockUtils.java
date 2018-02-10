@@ -286,6 +286,9 @@ public class BlockUtils {
 	 */
 	public static BlockNode getNextBlock(BlockNode block) {
 		List<BlockNode> s = block.getCleanSuccessors();
+		if (s == null) {
+			return null;
+		}
 		return s.isEmpty() ? null : s.get(0);
 	}
 

@@ -46,6 +46,10 @@ public class InstructionRemover {
 		this.instrList = block.getInstructions();
 	}
 
+	public void setInsnList(List<InsnNode> list) {
+		this.instrList = list;
+	}
+
 	public void add(InsnNode insn) {
 		toRemove.add(insn);
 	}

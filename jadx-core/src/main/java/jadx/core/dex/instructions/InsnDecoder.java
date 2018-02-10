@@ -10,6 +10,7 @@ import com.android.dx.io.instructions.FillArrayDataPayloadDecodedInstruction;
 import com.android.dx.io.instructions.PackedSwitchPayloadDecodedInstruction;
 import com.android.dx.io.instructions.ShortArrayCodeInput;
 import com.android.dx.io.instructions.SparseSwitchPayloadDecodedInstruction;
+import com.android.dx.io.instructions.ZeroRegisterDecodedInstruction;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,11 +60,15 @@ public class InsnDecoder {
 		OpcodeInfo.Info opcodeInfo;
 		try {
 			opcodeInfo = OpcodeInfo.get(opcode);
-		} catch (IllegalArgumentException e) {
-			LOG.warn("Ignore decode error: '{}', replace with NOP instruction", e.getMessage());
+		} catch (Exception e) {
+			LOG.warn("Ignore opcode decode error: '{}', replace with NOP instruction, mth: {}", e.getMessage(), method);
 			opcodeInfo = OpcodeInfo.NOP;
 		}
-		return opcodeInfo.getFormat().decode(opcodeUnit, in);
+		try {
+			return opcodeInfo.getFormat().decode(opcodeUnit, in);
+		} catch (Exception e) {
+			return new ZeroRegisterDecodedInstruction(OpcodeInfo.NOP.getFormat(), opcode, 0, null, 0, (long) 0);
+		}
 	}
 
 	public InsnNode[] process() throws DecodeException {
@@ -71,9 +76,14 @@ public class InsnDecoder {
 		for (int i = 0; i < insnArr.length; i++) {
 			DecodedInstruction rawInsn = insnArr[i];
 			if (rawInsn != null) {
-				InsnNode insn = decode(rawInsn, i);
-				insn.setOffset(i);
-				instructions[i] = insn;
+				try {
+					InsnNode insn = decode(rawInsn, i);
+					insn.setOffset(i);
+					instructions[i] = insn;
+				} catch (Exception e) {
+					LOG.warn("Ignore insn decode error: {}: {}, replace with NOP, mth: {}", e.getClass().getSimpleName(), e.getMessage(), method);
+					instructions[i] = new InsnNode(InsnType.NOP, 0);
+				}
 			} else {
 				instructions[i] = null;
 			}

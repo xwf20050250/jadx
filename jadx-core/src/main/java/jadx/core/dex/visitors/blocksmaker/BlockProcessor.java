@@ -245,7 +245,8 @@ public class BlockProcessor extends AbstractVisitor {
 	private static boolean modifyBlocksTree(MethodNode mth) {
 		for (BlockNode block : mth.getBasicBlocks()) {
 			if (block.getPredecessors().isEmpty() && block != mth.getEnterBlock()) {
-				throw new JadxRuntimeException("Unreachable block: " + block);
+//				throw new JadxRuntimeException("Unreachable block: " + block);
+				block.add(AFlag.REMOVE);
 			}
 
 			// check loops

@@ -20,12 +20,14 @@ import jadx.core.dex.visitors.EnumVisitor;
 import jadx.core.dex.visitors.ExtractFieldInit;
 import jadx.core.dex.visitors.FallbackModeVisitor;
 import jadx.core.dex.visitors.IDexTreeVisitor;
+import jadx.core.dex.visitors.InitJumps;
 import jadx.core.dex.visitors.MethodInlineVisitor;
 import jadx.core.dex.visitors.ModVisitor;
 import jadx.core.dex.visitors.PrepareForCodeGen;
 import jadx.core.dex.visitors.ReSugarCode;
 import jadx.core.dex.visitors.RenameVisitor;
 import jadx.core.dex.visitors.SimplifyVisitor;
+import jadx.core.dex.visitors.CheckInstructions;
 import jadx.core.dex.visitors.blocksmaker.BlockExceptionHandler;
 import jadx.core.dex.visitors.blocksmaker.BlockFinallyExtract;
 import jadx.core.dex.visitors.blocksmaker.BlockFinish;
@@ -59,6 +61,8 @@ public class Jadx {
 		if (args.isFallbackMode()) {
 			passes.add(new FallbackModeVisitor());
 		} else {
+			passes.add(new CheckInstructions());
+			passes.add(new InitJumps());
 			passes.add(new BlockSplitter());
 			passes.add(new BlockProcessor());
 			passes.add(new BlockExceptionHandler());
