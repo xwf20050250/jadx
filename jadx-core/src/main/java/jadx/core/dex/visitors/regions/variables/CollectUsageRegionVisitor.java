@@ -6,15 +6,13 @@ import java.util.List;
 import java.util.Map;
 
 import jadx.core.dex.attributes.AFlag;
+import jadx.core.dex.attributes.AttrNode;
 import jadx.core.dex.instructions.args.RegisterArg;
 import jadx.core.dex.instructions.args.SSAVar;
 import jadx.core.dex.nodes.IBlock;
 import jadx.core.dex.nodes.IRegion;
 import jadx.core.dex.nodes.InsnNode;
 import jadx.core.dex.nodes.MethodNode;
-import jadx.core.dex.regions.loops.ForLoop;
-import jadx.core.dex.regions.loops.LoopRegion;
-import jadx.core.dex.regions.loops.LoopType;
 import jadx.core.dex.visitors.regions.TracedRegionVisitor;
 
 class CollectUsageRegionVisitor extends TracedRegionVisitor {
@@ -33,38 +31,22 @@ class CollectUsageRegionVisitor extends TracedRegionVisitor {
 	@Override
 	public void processBlockTraced(MethodNode mth, IBlock block, IRegion curRegion) {
 		UsePlace usePlace = new UsePlace(curRegion, block);
-		regionProcess(usePlace);
 		int len = block.getInstructions().size();
 		for (int i = 0; i < len; i++) {
 			InsnNode insn = block.getInstructions().get(i);
-			if (insn.contains(AFlag.DONT_GENERATE)) {
-				continue;
-			}
 			processInsn(insn, usePlace);
 		}
 	}
 
-	private void regionProcess(UsePlace usePlace) {
-		IRegion region = usePlace.getRegion();
-		if (region instanceof LoopRegion) {
-			LoopRegion loopRegion = (LoopRegion) region;
-			LoopType loopType = loopRegion.getType();
-			if (loopType instanceof ForLoop) {
-				ForLoop forLoop = (ForLoop) loopType;
-				processInsn(forLoop.getInitInsn(), usePlace);
-				processInsn(forLoop.getIncrInsn(), usePlace);
-			}
-		}
-	}
-
-	void processInsn(InsnNode insn, UsePlace usePlace) {
+	protected void processInsn(InsnNode insn, UsePlace usePlace) {
 		if (insn == null) {
 			return;
 		}
+		boolean countInsn = countInUsage(insn);
 		// result
 		RegisterArg result = insn.getResult();
 		if (result != null && result.isRegister()) {
-			if (!result.contains(AFlag.DONT_GENERATE)) {
+			if (countInsn || countInUsage(result)) {
 				VarUsage usage = getUsage(result.getSVar());
 				usage.getAssigns().add(usePlace);
 			}
@@ -73,12 +55,18 @@ class CollectUsageRegionVisitor extends TracedRegionVisitor {
 		args.clear();
 		insn.getRegisterArgs(args);
 		for (RegisterArg arg : args) {
-			if (arg.contains(AFlag.DONT_GENERATE)) {
-				continue;
+			if (countInsn || countInUsage(arg)) {
+				VarUsage usage = getUsage(arg.getSVar());
+				usage.getUses().add(usePlace);
 			}
-			VarUsage usage = getUsage(arg.getSVar());
-			usage.getUses().add(usePlace);
 		}
+	}
+
+	protected boolean countInUsage(AttrNode node) {
+		if (node.contains(AFlag.COUNT_IN_VAR_USAGE)) {
+			return true;
+		}
+		return !node.contains(AFlag.DONT_GENERATE);
 	}
 
 	private VarUsage getUsage(SSAVar ssaVar) {

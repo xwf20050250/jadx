@@ -18,6 +18,7 @@ public enum AFlag {
 	DONT_RENAME, // do not rename during deobfuscation
 	REMOVE, // can be completely removed
 	ADDED_TO_REGION,
+	COUNT_IN_VAR_USAGE, // force process usage for insn or arg even if DONT_GENERATE is set
 
 	FINALLY_INSNS,
 
