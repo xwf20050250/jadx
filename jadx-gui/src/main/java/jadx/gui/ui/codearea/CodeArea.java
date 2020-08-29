@@ -1,5 +1,9 @@
 package jadx.gui.ui.codearea;
 
+import java.awt.event.InputEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+
 import javax.swing.*;
 
 import org.fife.ui.rsyntaxtextarea.RSyntaxDocument;
@@ -32,15 +36,32 @@ public final class CodeArea extends AbstractCodeArea {
 		super(contentPanel);
 		setSyntaxEditingStyle(node.getSyntaxName());
 
-		if (node instanceof JClass) {
+		boolean isJavaCode = node instanceof JClass;
+		if (isJavaCode) {
 			((RSyntaxDocument) getDocument()).setSyntaxStyle(new JadxTokenMaker(this));
 			addMenuItems();
 		}
 
 		setHyperlinksEnabled(true);
-		CodeLinkGenerator codeLinkProcessor = new CodeLinkGenerator(this);
-		setLinkGenerator(codeLinkProcessor);
-		addHyperlinkListener(codeLinkProcessor);
+		setLinkScanningMask(InputEvent.CTRL_DOWN_MASK);
+		CodeLinkGenerator codeLinkGenerator = new CodeLinkGenerator(this);
+		setLinkGenerator(codeLinkGenerator);
+		addMouseListener(new MouseAdapter() {
+			@SuppressWarnings("deprecation")
+			@Override
+			public void mouseClicked(MouseEvent e) {
+				if (e.isControlDown()) {
+					int offs = viewToModel(e.getPoint());
+					JumpPosition jump = codeLinkGenerator.getJumpLinkAtOffset(CodeArea.this, offs);
+					if (jump != null) {
+						contentPanel.getTabbedPane().codeJump(jump);
+					}
+				}
+			}
+		});
+		if (isJavaCode) {
+			addMouseMotionListener(new MouseHoverHighlighter(this, codeLinkGenerator));
+		}
 	}
 
 	@Override
@@ -49,6 +70,11 @@ public final class CodeArea extends AbstractCodeArea {
 			setText(node.getContent());
 			setCaretPosition(0);
 		}
+	}
+
+	@Override
+	public void refresh() {
+		setText(node.getContent());
 	}
 
 	private void addMenuItems() {

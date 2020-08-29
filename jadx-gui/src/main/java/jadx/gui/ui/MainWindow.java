@@ -397,7 +397,12 @@ public class MainWindow extends JFrame {
 		cacheObject.setIndexJob(new IndexJob(wrapper, cacheObject, threadsCount));
 	}
 
-	private synchronized void runBackgroundJobs() {
+	public void resetIndex() {
+		int threadsCount = settings.getThreadsCount();
+		cacheObject.setIndexJob(new IndexJob(wrapper, cacheObject, threadsCount));
+	}
+
+	synchronized void runBackgroundJobs() {
 		cancelBackgroundJobs();
 		backgroundWorker = new BackgroundWorker(cacheObject, progressPane);
 		if (settings.isAutoStartJobs()) {
@@ -509,11 +514,11 @@ public class MainWindow extends JFrame {
 		tabbedPane.closeAllTabs();
 		resetCache();
 		treeRoot = null;
-		treeModel.setRoot(treeRoot);
+		treeModel.setRoot(null);
 		treeModel.reload();
 	}
 
-	private void reloadTree() {
+	public void reloadTree() {
 		treeReloading = true;
 
 		treeModel.reload();
@@ -1098,6 +1103,7 @@ public class MainWindow extends JFrame {
 		settings.saveWindowPos(this);
 		settings.setMainWindowExtendedState(getExtendedState());
 		cancelBackgroundJobs();
+		wrapper.close();
 		dispose();
 
 		FileUtils.deleteTempRootDir();
@@ -1122,6 +1128,10 @@ public class MainWindow extends JFrame {
 
 	public BackgroundWorker getBackgroundWorker() {
 		return backgroundWorker;
+	}
+
+	public BackgroundExecutor getBackgroundExecutor() {
+		return backgroundExecutor;
 	}
 
 	public ProgressPanel getProgressPane() {

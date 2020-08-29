@@ -58,7 +58,7 @@ public class Utils {
 		if (objects == null) {
 			return "";
 		}
-		return listToString(objects, joiner, Object::toString);
+		return listToString(objects, joiner, Objects::toString);
 	}
 
 	public static <T> String listToString(Iterable<T> objects, Function<T, String> toStr) {
@@ -158,14 +158,17 @@ public class Utils {
 	private static void filter(Throwable th) {
 		StackTraceElement[] stackTrace = th.getStackTrace();
 		int length = stackTrace.length;
+		StackTraceElement prevElement = null;
 		for (int i = 0; i < length; i++) {
 			StackTraceElement stackTraceElement = stackTrace[i];
 			String clsName = stackTraceElement.getClassName();
 			if (clsName.equals(STACKTRACE_STOP_CLS_NAME)
-					|| clsName.startsWith(JADX_API_PACKAGE)) {
+					|| clsName.startsWith(JADX_API_PACKAGE)
+					|| Objects.equals(prevElement, stackTraceElement)) {
 				th.setStackTrace(Arrays.copyOfRange(stackTrace, 0, i));
 				return;
 			}
+			prevElement = stackTraceElement;
 		}
 	}
 

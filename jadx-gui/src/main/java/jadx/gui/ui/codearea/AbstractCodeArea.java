@@ -34,7 +34,7 @@ public abstract class AbstractCodeArea extends RSyntaxTextArea {
 		this.contentPanel = contentPanel;
 		this.node = contentPanel.getNode();
 
-		setMarkOccurrences(true);
+		setMarkOccurrences(false);
 		setEditable(false);
 		setCodeFoldingEnabled(false);
 		loadSettings();
@@ -52,6 +52,12 @@ public abstract class AbstractCodeArea extends RSyntaxTextArea {
 	 * Implement in this method the code that loads and sets the content to be displayed
 	 */
 	public abstract void load();
+
+	/**
+	 * Implement in this method the code that reloads node from cache and sets the new content to be
+	 * displayed
+	 */
+	public abstract void refresh();
 
 	public static RSyntaxTextArea getDefaultArea(MainWindow mainWindow) {
 		RSyntaxTextArea area = new RSyntaxTextArea();

@@ -1,22 +1,31 @@
 package jadx.api;
 
+import java.io.Closeable;
 import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import jadx.api.plugins.JadxPlugin;
+import jadx.api.plugins.JadxPluginManager;
+import jadx.api.plugins.input.JadxInputPlugin;
+import jadx.api.plugins.input.data.ILoadResult;
 import jadx.core.Jadx;
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.nodes.LineAttrNode;
@@ -26,8 +35,8 @@ import jadx.core.dex.nodes.MethodNode;
 import jadx.core.dex.nodes.RootNode;
 import jadx.core.dex.visitors.SaveCode;
 import jadx.core.export.ExportGradleProject;
+import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.JadxRuntimeException;
-import jadx.core.utils.files.InputFile;
 import jadx.core.xmlgen.BinaryXMLParser;
 import jadx.core.xmlgen.ResourcesSaver;
 
@@ -39,10 +48,10 @@ import jadx.core.xmlgen.ResourcesSaver;
  * JadxArgs args = new JadxArgs();
  * args.getInputFiles().add(new File("test.apk"));
  * args.setOutDir(new File("jadx-test-output"));
- *
- * JadxDecompiler jadx = new JadxDecompiler(args);
- * jadx.load();
- * jadx.save();
+ * try (JadxDecompiler jadx = new JadxDecompiler(args)) {
+ *    jadx.load();
+ *    jadx.save();
+ * }
  * </code>
  * </pre>
  * <p>
@@ -56,11 +65,12 @@ import jadx.core.xmlgen.ResourcesSaver;
  * </code>
  * </pre>
  */
-public final class JadxDecompiler {
+public final class JadxDecompiler implements Closeable {
 	private static final Logger LOG = LoggerFactory.getLogger(JadxDecompiler.class);
 
 	private JadxArgs args;
-	private List<InputFile> inputFiles;
+	private JadxPluginManager pluginManager = new JadxPluginManager();
+	private List<ILoadResult> loadedInputs = new ArrayList<>();
 
 	private RootNode root;
 	private List<JavaClass> classes;
@@ -68,9 +78,9 @@ public final class JadxDecompiler {
 
 	private BinaryXMLParser xmlParser;
 
-	private Map<ClassNode, JavaClass> classesMap = new ConcurrentHashMap<>();
-	private Map<MethodNode, JavaMethod> methodsMap = new ConcurrentHashMap<>();
-	private Map<FieldNode, JavaField> fieldsMap = new ConcurrentHashMap<>();
+	private final Map<ClassNode, JavaClass> classesMap = new ConcurrentHashMap<>();
+	private final Map<MethodNode, JavaMethod> methodsMap = new ConcurrentHashMap<>();
+	private final Map<FieldNode, JavaField> fieldsMap = new ConcurrentHashMap<>();
 
 	public JadxDecompiler() {
 		this(new JadxArgs());
@@ -84,14 +94,25 @@ public final class JadxDecompiler {
 		reset();
 		JadxArgsValidator.validate(args);
 		LOG.info("loading ...");
-
-		inputFiles = loadFiles(args.getInputFiles());
+		loadInputFiles();
 
 		root = new RootNode(args);
-		root.load(inputFiles);
+		root.loadClasses(loadedInputs);
 		root.initClassPath();
 		root.loadResources(getResources());
+		root.runPreDecompileStage();
 		root.initPasses();
+	}
+
+	private void loadInputFiles() {
+		loadedInputs.clear();
+		List<Path> inputPaths = Utils.collectionMap(args.getInputFiles(), File::toPath);
+		for (JadxInputPlugin inputPlugin : pluginManager.getInputPlugins()) {
+			ILoadResult loadResult = inputPlugin.loadFiles(inputPaths);
+			if (loadResult != null && !loadResult.isEmpty()) {
+				loadedInputs.add(loadResult);
+			}
+		}
 	}
 
 	private void reset() {
@@ -103,25 +124,32 @@ public final class JadxDecompiler {
 		classesMap.clear();
 		methodsMap.clear();
 		fieldsMap.clear();
+
+		closeInputs();
+	}
+
+	private void closeInputs() {
+		loadedInputs.forEach(load -> {
+			try {
+				load.close();
+			} catch (Exception e) {
+				LOG.error("Failed to close input", e);
+			}
+		});
+		loadedInputs.clear();
+	}
+
+	@Override
+	public void close() {
+		reset();
+	}
+
+	public void registerPlugin(JadxPlugin plugin) {
+		pluginManager.register(plugin);
 	}
 
 	public static String getVersion() {
 		return Jadx.getVersion();
-	}
-
-	private List<InputFile> loadFiles(List<File> files) {
-		if (files.isEmpty()) {
-			throw new JadxRuntimeException("Empty file list");
-		}
-		List<InputFile> filesList = new ArrayList<>();
-		for (File file : files) {
-			try {
-				InputFile.addFilesFrom(file, filesList, args.isSkipSources());
-			} catch (Exception e) {
-				throw new JadxRuntimeException("Error load file: " + file, e);
-			}
-		}
-		return filesList;
 	}
 
 	public void save() {
@@ -232,7 +260,7 @@ public final class JadxDecompiler {
 			if (root == null) {
 				return Collections.emptyList();
 			}
-			resources = new ResourcesLoader(this).load(inputFiles);
+			resources = new ResourcesLoader(this).load();
 		}
 		return resources;
 	}
@@ -398,6 +426,13 @@ public final class JadxDecompiler {
 			return getJavaFieldByNode((FieldNode) obj);
 		}
 		throw new JadxRuntimeException("Unexpected node type: " + obj);
+	}
+
+	List<JavaNode> convertNodes(Collection<?> nodesList) {
+		return nodesList.stream()
+				.map(this::convertNode)
+				.filter(Objects::nonNull)
+				.collect(Collectors.toList());
 	}
 
 	@Nullable

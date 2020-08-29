@@ -57,6 +57,13 @@ public final class JavaClass implements JavaNode {
 		cls.decompile();
 	}
 
+	public synchronized void refresh() {
+		listsLoaded = false;
+		cls.unload();
+		cls.deepUnload();
+		cls.reRunDecompile();
+	}
+
 	public synchronized String getSmali() {
 		return cls.getSmali();
 	}
@@ -119,7 +126,7 @@ public final class JavaClass implements JavaNode {
 		}
 	}
 
-	private JadxDecompiler getRootDecompiler() {
+	protected JadxDecompiler getRootDecompiler() {
 		if (parent != null) {
 			return parent.getRootDecompiler();
 		}
@@ -149,6 +156,11 @@ public final class JavaClass implements JavaNode {
 			}
 		}
 		return resultMap;
+	}
+
+	@Override
+	public List<JavaNode> getUseIn() {
+		return getRootDecompiler().convertNodes(cls.getUseIn());
 	}
 
 	@Nullable

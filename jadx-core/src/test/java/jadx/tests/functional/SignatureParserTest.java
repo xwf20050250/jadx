@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 
 import jadx.core.dex.instructions.args.ArgType;
 import jadx.core.dex.instructions.args.ArgType.WildcardBound;
-import jadx.core.dex.nodes.GenericTypeParameter;
 import jadx.core.dex.nodes.parser.SignatureParser;
 
 import static jadx.core.dex.instructions.args.ArgType.INT;
@@ -21,6 +20,7 @@ import static jadx.core.dex.instructions.args.ArgType.wildcard;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 
@@ -59,6 +59,16 @@ class SignatureParserTest {
 	}
 
 	@Test
+	public void testNestedInnerGeneric() {
+		String signature = "La<TV;>.I.X;";
+		ArgType result = new SignatureParser(signature).consumeType();
+		assertThat(result.getObject(), is("a$I$X"));
+		// nested 'outerGeneric' objects
+		ArgType obj = generic("La;", genericType("V"));
+		assertThat(result, equalTo(outerGeneric(outerGeneric(obj, object("I")), object("X"))));
+	}
+
+	@Test
 	public void testWildcards() {
 		checkWildcards("*", wildcard());
 		checkWildcards("+Lb;", wildcard(object("b"), WildcardBound.EXTENDS));
@@ -92,12 +102,12 @@ class SignatureParserTest {
 
 	@SuppressWarnings("unchecked")
 	private static void checkGenerics(String g, Object... objs) {
-		List<GenericTypeParameter> genericsList = new SignatureParser(g).consumeGenericTypeParameters();
-		List<GenericTypeParameter> expectedList = new ArrayList<>();
+		List<ArgType> genericsList = new SignatureParser(g).consumeGenericTypeParameters();
+		List<ArgType> expectedList = new ArrayList<>();
 		for (int i = 0; i < objs.length; i += 2) {
-			ArgType generic = genericType((String) objs[i]);
+			String typeVar = (String) objs[i];
 			List<ArgType> list = (List<ArgType>) objs[i + 1];
-			expectedList.add(new GenericTypeParameter(generic, list));
+			expectedList.add(ArgType.genericType(typeVar, list));
 		}
 		assertThat(genericsList, is(expectedList));
 	}
@@ -122,7 +132,7 @@ class SignatureParserTest {
 
 	@Test
 	public void testBadGenericMap() {
-		List<GenericTypeParameter> list = new SignatureParser("<A:Ljava/lang/Object;B").consumeGenericTypeParameters();
+		List<ArgType> list = new SignatureParser("<A:Ljava/lang/Object;B").consumeGenericTypeParameters();
 		assertThat(list, hasSize(0));
 	}
 }

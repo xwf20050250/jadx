@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.jar.JarOutputStream;
 
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
@@ -38,6 +39,7 @@ import jadx.core.dex.nodes.ClassNode;
 import jadx.core.dex.nodes.MethodNode;
 import jadx.core.dex.nodes.RootNode;
 import jadx.core.utils.DebugChecks;
+import jadx.core.utils.Utils;
 import jadx.core.utils.files.FileUtils;
 import jadx.core.xmlgen.ResourceStorage;
 import jadx.core.xmlgen.entry.ResourceEntry;
@@ -102,6 +104,8 @@ public abstract class IntegrationTest extends TestUtils {
 		DebugChecks.checksEnabled = true;
 	}
 
+	protected JadxDecompiler jadxDecompiler;
+
 	@BeforeEach
 	public void init() {
 		this.deleteTmpFiles = true;
@@ -122,6 +126,9 @@ public abstract class IntegrationTest extends TestUtils {
 	@AfterEach
 	public void after() {
 		FileUtils.clearTempRootDir();
+		if (jadxDecompiler != null) {
+			jadxDecompiler.close();
+		}
 	}
 
 	public String getTestName() {
@@ -135,7 +142,7 @@ public abstract class IntegrationTest extends TestUtils {
 	public ClassNode getClassNode(Class<?> clazz) {
 		try {
 			File jar = getJarForClass(clazz);
-			return getClassNodeFromFile(jar, clazz.getName());
+			return getClassNodeFromFiles(Collections.singletonList(jar), clazz.getName());
 		} catch (Exception e) {
 			e.printStackTrace();
 			fail(e.getMessage());
@@ -143,15 +150,15 @@ public abstract class IntegrationTest extends TestUtils {
 		return null;
 	}
 
-	public ClassNode getClassNodeFromFile(File file, String clsName) {
-		JadxDecompiler d = loadFiles(Collections.singletonList(file));
-		RootNode root = JadxInternalAccess.getRoot(d);
+	public ClassNode getClassNodeFromFiles(List<File> files, String clsName) {
+		jadxDecompiler = loadFiles(files);
+		RootNode root = JadxInternalAccess.getRoot(jadxDecompiler);
 
-		ClassNode cls = root.searchClassByName(clsName);
+		ClassNode cls = root.resolveClass(clsName);
 		assertThat("Class not found: " + clsName, cls, notNullValue());
 		assertThat(clsName, is(cls.getClassInfo().getFullName()));
 
-		decompileAndCheck(d, Collections.singletonList(cls));
+		decompileAndCheck(jadxDecompiler, Collections.singletonList(cls));
 		return cls;
 	}
 
@@ -166,13 +173,13 @@ public abstract class IntegrationTest extends TestUtils {
 	}
 
 	protected JadxDecompiler loadFiles(List<File> inputFiles) {
-		JadxDecompiler d;
+		args.setInputFiles(inputFiles);
+		JadxDecompiler d = new JadxDecompiler(args);
 		try {
-			args.setInputFiles(inputFiles);
-			d = new JadxDecompiler(args);
 			d.load();
 		} catch (Exception e) {
 			e.printStackTrace();
+			d.close();
 			fail(e.getMessage());
 			return null;
 		}
@@ -262,7 +269,10 @@ public abstract class IntegrationTest extends TestUtils {
 	protected void checkCode(ClassNode cls) {
 		assertFalse(hasErrors(cls), "Inconsistent cls: " + cls);
 		for (MethodNode mthNode : cls.getMethods()) {
-			assertFalse(hasErrors(mthNode), "Method with problems: " + mthNode);
+			if (hasErrors(mthNode)) {
+				fail("Method with problems: " + mthNode
+						+ "\n " + Utils.listToString(mthNode.getAttributesStringsList(), "\n "));
+			}
 		}
 		assertThat(cls.getCode().toString(), not(containsString("inconsistent")));
 	}
@@ -454,6 +464,13 @@ public abstract class IntegrationTest extends TestUtils {
 		return files;
 	}
 
+	@NotNull
+	protected static String removeLineComments(ClassNode cls) {
+		String code = cls.getCode().getCodeStr().replaceAll("\\W*//.*", "");
+		System.out.println(code);
+		return code;
+	}
+
 	public JadxArgs getArgs() {
 		return args;
 	}
@@ -475,6 +492,7 @@ public abstract class IntegrationTest extends TestUtils {
 	}
 
 	protected void setFallback() {
+		disableCompilation();
 		this.args.setFallbackMode(true);
 	}
 

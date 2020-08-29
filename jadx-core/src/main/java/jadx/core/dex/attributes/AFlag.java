@@ -15,6 +15,7 @@ public enum AFlag {
 
 	DONT_WRAP,
 	DONT_INLINE,
+	DONT_INLINE_CONST,
 	DONT_GENERATE, // process as usual, but don't output to generated code
 	COMMENT_OUT, // process as usual, but comment insn in generated code
 	REMOVE, // can be completely removed
@@ -60,7 +61,6 @@ public enum AFlag {
 
 	FALL_THROUGH,
 
-	EXPLICIT_GENERICS,
 	VARARG_CALL,
 
 	/**
@@ -68,6 +68,7 @@ public enum AFlag {
 	 */
 	EXPLICIT_PRIMITIVE_TYPE,
 	EXPLICIT_CAST,
+	SOFT_CAST, // synthetic cast to help type inference
 
 	INCONSISTENT_CODE, // warning about incorrect decompilation
 }

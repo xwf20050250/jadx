@@ -6,7 +6,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -191,7 +190,10 @@ public class BlockUtils {
 	}
 
 	@Nullable
-	public static BlockNode getBlockByInsn(MethodNode mth, InsnNode insn) {
+	public static BlockNode getBlockByInsn(MethodNode mth, @Nullable InsnNode insn) {
+		if (insn == null) {
+			return null;
+		}
 		if (insn instanceof PhiInsn) {
 			return searchBlockWithPhi(mth, (PhiInsn) insn);
 		}
@@ -535,16 +537,21 @@ public class BlockUtils {
 	}
 
 	public static List<BlockNode> buildSimplePath(BlockNode block) {
-		List<BlockNode> list = new LinkedList<>();
-		BlockNode currentBlock = block;
+		if (block == null) {
+			return Collections.emptyList();
+		}
+		List<BlockNode> list = new ArrayList<>();
+		if (block.getCleanSuccessors().size() >= 2) {
+			return Collections.emptyList();
+		}
+		list.add(block);
+
+		BlockNode currentBlock = getNextBlock(block);
 		while (currentBlock != null
 				&& currentBlock.getCleanSuccessors().size() < 2
 				&& currentBlock.getPredecessors().size() == 1) {
 			list.add(currentBlock);
 			currentBlock = getNextBlock(currentBlock);
-		}
-		if (list.isEmpty()) {
-			return Collections.emptyList();
 		}
 		return list;
 	}
@@ -657,6 +664,19 @@ public class BlockUtils {
 			InsnNode instruction = instructions.get(i);
 			if (instruction == oldInsn) {
 				replaceInsn(mth, block, i, newInsn);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static boolean insertAfterInsn(BlockNode block, InsnNode insn, InsnNode newInsn) {
+		List<InsnNode> instructions = block.getInstructions();
+		int size = instructions.size();
+		for (int i = 0; i < size; i++) {
+			InsnNode instruction = instructions.get(i);
+			if (instruction == insn) {
+				instructions.add(i + 1, newInsn);
 				return true;
 			}
 		}
