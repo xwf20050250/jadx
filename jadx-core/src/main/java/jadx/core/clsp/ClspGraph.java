@@ -58,14 +58,8 @@ public class ClspGraph {
 		if (nameMap == null) {
 			throw new JadxRuntimeException("Classpath must be loaded first");
 		}
-		int size = classes.size();
-		ClspClass[] nClasses = new ClspClass[size];
-		int k = 0;
 		for (ClassNode cls : classes) {
-			nClasses[k++] = addClass(cls);
-		}
-		for (int i = 0; i < size; i++) {
-			nClasses[i].setParents(ClsSet.makeParentsArray(classes.get(i)));
+			addClass(cls);
 		}
 	}
 
@@ -97,7 +91,7 @@ public class ClspGraph {
 				}
 			}
 		}
-		// all other methods in known ClspClass are 'simple'
+		// unknown method
 		return new SimpleMethodDetails(methodInfo);
 	}
 
@@ -105,12 +99,12 @@ public class ClspGraph {
 		return cls.getMethodsMap().get(methodInfo.getShortId());
 	}
 
-	private ClspClass addClass(ClassNode cls) {
+	private void addClass(ClassNode cls) {
 		ArgType clsType = cls.getClassInfo().getType();
 		String rawName = clsType.getObject();
 		ClspClass clspClass = new ClspClass(clsType, -1);
+		clspClass.setParents(ClsSet.makeParentsArray(cls));
 		nameMap.put(rawName, clspClass);
-		return clspClass;
 	}
 
 	/**

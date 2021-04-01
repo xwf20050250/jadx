@@ -69,8 +69,7 @@ public class BlockProcessor extends AbstractVisitor {
 			updateExitBlocks(mth);
 
 			if (i++ > 100) {
-				mth.addWarn("CFG modification limit reached, blocks count: " + mth.getBasicBlocks().size());
-				break;
+				throw new JadxRuntimeException("CFG modification limit reached, blocks count: " + mth.getBasicBlocks().size());
 			}
 		}
 		checkForUnreachableBlocks(mth);
@@ -750,7 +749,9 @@ public class BlockProcessor extends AbstractVisitor {
 				first = false;
 			} else {
 				for (InsnNode oldInsn : exitBlock.getInstructions()) {
-					newRetBlock.getInstructions().add(oldInsn.copyWithoutSsa());
+					InsnNode copyInsn = oldInsn.copyWithoutSsa();
+					copyInsn.add(AFlag.SYNTHETIC);
+					newRetBlock.getInstructions().add(copyInsn);
 				}
 			}
 			BlockSplitter.replaceConnection(pred, exitBlock, newRetBlock);

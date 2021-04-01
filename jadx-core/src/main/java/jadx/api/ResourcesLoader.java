@@ -7,7 +7,6 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -18,12 +17,13 @@ import org.slf4j.LoggerFactory;
 import jadx.api.ResourceFile.ZipRef;
 import jadx.api.impl.SimpleCodeInfo;
 import jadx.api.plugins.utils.ZipSecurity;
-import jadx.core.codegen.CodeWriter;
+import jadx.core.dex.nodes.RootNode;
 import jadx.core.utils.Utils;
 import jadx.core.utils.android.Res9patchStreamDecoder;
 import jadx.core.utils.exceptions.JadxException;
 import jadx.core.utils.files.FileUtils;
 import jadx.core.xmlgen.ResContainer;
+import jadx.core.xmlgen.ResProtoParser;
 import jadx.core.xmlgen.ResTableParser;
 
 import static jadx.core.utils.files.FileUtils.READ_BUFFER_SIZE;
@@ -56,7 +56,7 @@ public final class ResourcesLoader {
 		try {
 			ZipRef zipRef = rf.getZipRef();
 			if (zipRef == null) {
-				File file = new File(rf.getName());
+				File file = new File(rf.getOriginalName());
 				try (InputStream inputStream = new BufferedInputStream(new FileInputStream(file))) {
 					return decoder.decode(file.length(), inputStream);
 				}
@@ -69,13 +69,13 @@ public final class ResourcesLoader {
 					if (!ZipSecurity.isValidZipEntry(entry)) {
 						return null;
 					}
-					try (InputStream inputStream = new BufferedInputStream(zipFile.getInputStream(entry))) {
+					try (InputStream inputStream = ZipSecurity.getInputStreamForEntry(zipFile, entry)) {
 						return decoder.decode(entry.getSize(), inputStream);
 					}
 				}
 			}
 		} catch (Exception e) {
-			throw new JadxException("Error decode: " + rf.getName(), e);
+			throw new JadxException("Error decode: " + rf.getDeobfName(), e);
 		}
 	}
 
@@ -84,23 +84,34 @@ public final class ResourcesLoader {
 			return decodeStream(rf, (size, is) -> loadContent(jadxRef, rf, is));
 		} catch (JadxException e) {
 			LOG.error("Decode error", e);
-			CodeWriter cw = new CodeWriter();
+			ICodeWriter cw = jadxRef.getRoot().makeCodeWriter();
 			cw.add("Error decode ").add(rf.getType().toString().toLowerCase());
 			Utils.appendStackTrace(cw, e.getCause());
-			return ResContainer.textResource(rf.getName(), cw.finish());
+			return ResContainer.textResource(rf.getDeobfName(), cw.finish());
 		}
 	}
 
 	private static ResContainer loadContent(JadxDecompiler jadxRef, ResourceFile rf,
 			InputStream inputStream) throws IOException {
+		RootNode root = jadxRef.getRoot();
 		switch (rf.getType()) {
 			case MANIFEST:
-			case XML:
-				ICodeInfo content = jadxRef.getXmlParser().parse(inputStream);
-				return ResContainer.textResource(rf.getName(), content);
+			case XML: {
+				ICodeInfo content;
+				if (root.isProto()) {
+					content = jadxRef.getProtoXmlParser().parse(inputStream);
+				} else {
+					content = jadxRef.getBinaryXmlParser().parse(inputStream);
+				}
+				return ResContainer.textResource(rf.getDeobfName(), content);
+			}
 
 			case ARSC:
-				return new ResTableParser(jadxRef.getRoot()).decodeFiles(inputStream);
+				if (root.isProto()) {
+					return new ResProtoParser(root).decodeFiles(inputStream);
+				} else {
+					return new ResTableParser(root).decodeFiles(inputStream);
+				}
 
 			case IMG:
 				return decodeImage(rf, inputStream);
@@ -111,12 +122,12 @@ public final class ResourcesLoader {
 	}
 
 	private static ResContainer decodeImage(ResourceFile rf, InputStream inputStream) {
-		String name = rf.getName();
+		String name = rf.getOriginalName();
 		if (name.endsWith(".9.png")) {
 			try (ByteArrayOutputStream os = new ByteArrayOutputStream()) {
 				Res9patchStreamDecoder decoder = new Res9patchStreamDecoder();
 				decoder.decode(inputStream, os);
-				return ResContainer.decodedData(rf.getName(), os.toByteArray());
+				return ResContainer.decodedData(rf.getDeobfName(), os.toByteArray());
 			} catch (Exception e) {
 				LOG.error("Failed to decode 9-patch png image, path: {}", name, e);
 			}
@@ -129,17 +140,10 @@ public final class ResourcesLoader {
 			return;
 		}
 		if (FileUtils.isZipFile(file)) {
-			try (ZipFile zip = new ZipFile(file)) {
-				Enumeration<? extends ZipEntry> entries = zip.entries();
-				while (entries.hasMoreElements()) {
-					ZipEntry entry = entries.nextElement();
-					if (ZipSecurity.isValidZipEntry(entry)) {
-						addEntry(list, file, entry);
-					}
-				}
-			} catch (Exception e) {
-				LOG.warn("Failed to open zip file: {}", file.getAbsolutePath());
-			}
+			ZipSecurity.visitZipEntries(file, (zipFile, entry) -> {
+				addEntry(list, file, entry);
+				return null;
+			});
 		} else {
 			addResourceFile(list, file);
 		}
@@ -167,7 +171,6 @@ public final class ResourcesLoader {
 		}
 	}
 
-	@SuppressWarnings("CharsetObjectCanBeUsed")
 	public static ICodeInfo loadToCodeWriter(InputStream is) throws IOException {
 		ByteArrayOutputStream baos = new ByteArrayOutputStream(READ_BUFFER_SIZE);
 		copyStream(is, baos);

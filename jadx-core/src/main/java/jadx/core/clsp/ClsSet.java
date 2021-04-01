@@ -39,8 +39,6 @@ import jadx.core.utils.exceptions.DecodeException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 import jadx.core.utils.files.FileUtils;
 
-import static jadx.core.utils.Utils.notEmpty;
-
 /**
  * Classes list for import into classpath graph
  */
@@ -49,7 +47,7 @@ public class ClsSet {
 
 	private static final String CLST_EXTENSION = ".jcst";
 	private static final String CLST_FILENAME = "core" + CLST_EXTENSION;
-	private static final String CLST_PKG_PATH = ClsSet.class.getPackage().getName().replace('.', '/');
+	private static final String CLST_PATH = "/clst/" + CLST_FILENAME;
 
 	private static final String JADX_CLS_SET_HEADER = "jadx-cst";
 	private static final int VERSION = 3;
@@ -78,9 +76,9 @@ public class ClsSet {
 
 	public void loadFromClstFile() throws IOException, DecodeException {
 		long startTime = System.currentTimeMillis();
-		try (InputStream input = getClass().getResourceAsStream(CLST_FILENAME)) {
+		try (InputStream input = ClsSet.class.getResourceAsStream(CLST_PATH)) {
 			if (input == null) {
-				throw new JadxRuntimeException("Can't load classpath file: " + CLST_FILENAME);
+				throw new JadxRuntimeException("Can't load classpath file: " + CLST_PATH);
 			}
 			load(input);
 		}
@@ -131,25 +129,13 @@ public class ClsSet {
 
 	private void processMethodDetails(MethodNode mth, List<ClspMethod> methods) {
 		AccessInfo accessFlags = mth.getAccessFlags();
-		if (accessFlags.isPrivate()) {
+		if (accessFlags.isPrivate() || accessFlags.isSynthetic() || accessFlags.isBridge()) {
 			return;
 		}
-		ArgType genericRetType = mth.getReturnType();
-		boolean varArgs = accessFlags.isVarArgs();
-		List<ArgType> throwList = mth.getThrows();
-		List<ArgType> typeParameters = mth.getTypeParameters();
-		// add only methods with additional info
-		if (varArgs
-				|| notEmpty(throwList)
-				|| notEmpty(typeParameters)
-				|| genericRetType.containsGeneric()
-				|| mth.containsGenericArgs()
-				|| mth.isArgsOverloaded()) {
-			ClspMethod clspMethod = new ClspMethod(mth.getMethodInfo(),
-					mth.getArgTypes(), genericRetType,
-					typeParameters, varArgs, throwList);
-			methods.add(clspMethod);
-		}
+		ClspMethod clspMethod = new ClspMethod(mth.getMethodInfo(), mth.getArgTypes(),
+				mth.getReturnType(), mth.getTypeParameters(),
+				mth.getThrows(), accessFlags.rawValue());
+		methods.add(clspMethod);
 	}
 
 	public static ArgType[] makeParentsArray(ClassNode cls) {
@@ -197,7 +183,7 @@ public class ClsSet {
 
 			try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(path));
 					ZipInputStream in = new ZipInputStream(Files.newInputStream(temp))) {
-				String clst = CLST_PKG_PATH + '/' + CLST_FILENAME;
+				String clst = CLST_PATH;
 				boolean clstReplaced = false;
 				ZipEntry entry = in.getNextEntry();
 				while (entry != null) {
@@ -245,7 +231,7 @@ public class ClsSet {
 			}
 		}
 		int methodsCount = Stream.of(classes).mapToInt(c -> c.getMethodsMap().size()).sum();
-		LOG.info("Classes: {}, methods: {}, file size: {}B", classes.length, methodsCount, out.size());
+		LOG.info("Classes: {}, methods: {}, file size: {} bytes", classes.length, methodsCount, out.size());
 	}
 
 	private static void writeMethod(DataOutputStream out, ClspMethod method, Map<String, ClspClass> names) throws IOException {
@@ -257,7 +243,7 @@ public class ClsSet {
 		writeArgTypesList(out, method.containsGenericArgs() ? method.getArgTypes() : Collections.emptyList(), names);
 		writeArgType(out, method.getReturnType(), names);
 		writeArgTypesList(out, method.getTypeParameters(), names);
-		out.writeBoolean(method.isVarArg());
+		out.writeInt(method.getRawAccessFlags());
 		writeArgTypesList(out, method.getThrows(), names);
 	}
 
@@ -325,22 +311,22 @@ public class ClsSet {
 
 	private void load(File input) throws IOException, DecodeException {
 		String name = input.getName();
-		try (InputStream inputStream = new FileInputStream(input)) {
-			if (name.endsWith(CLST_EXTENSION)) {
+		if (name.endsWith(CLST_EXTENSION)) {
+			try (InputStream inputStream = new FileInputStream(input)) {
 				load(inputStream);
-			} else if (name.endsWith(".jar")) {
-				try (ZipInputStream in = new ZipInputStream(inputStream)) {
-					ZipEntry entry = in.getNextEntry();
-					while (entry != null) {
-						if (entry.getName().endsWith(CLST_EXTENSION) && ZipSecurity.isValidZipEntry(entry)) {
-							load(in);
-						}
-						entry = in.getNextEntry();
+			}
+		} else if (name.endsWith(".jar")) {
+			ZipSecurity.readZipEntries(input, (entry, in) -> {
+				if (entry.getName().endsWith(CLST_EXTENSION)) {
+					try {
+						load(in);
+					} catch (Exception e) {
+						throw new JadxRuntimeException("Failed to load jadx class set");
 					}
 				}
-			} else {
-				throw new JadxRuntimeException("Unknown file format: " + name);
-			}
+			});
+		} else {
+			throw new JadxRuntimeException("Unknown file format: " + name);
 		}
 	}
 
@@ -392,12 +378,12 @@ public class ClsSet {
 			genericRetType = retType;
 		}
 		List<ArgType> typeParameters = readArgTypesList(in);
-		boolean varArgs = in.readBoolean();
+		int accFlags = in.readInt();
 		List<ArgType> throwList = readArgTypesList(in);
 		MethodInfo methodInfo = MethodInfo.fromDetails(root, clsInfo, name, argTypes, retType);
 		return new ClspMethod(methodInfo,
 				genericArgTypes, genericRetType,
-				typeParameters, varArgs, throwList);
+				typeParameters, throwList, accFlags);
 	}
 
 	private List<ArgType> readArgTypesList(DataInputStream in) throws IOException {

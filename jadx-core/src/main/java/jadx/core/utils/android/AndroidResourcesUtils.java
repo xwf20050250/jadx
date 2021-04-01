@@ -9,15 +9,15 @@ import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import jadx.api.ICodeWriter;
 import jadx.api.plugins.input.data.AccessFlags;
 import jadx.api.plugins.input.data.annotations.EncodedType;
 import jadx.api.plugins.input.data.annotations.EncodedValue;
 import jadx.core.codegen.ClassGen;
-import jadx.core.codegen.CodeWriter;
 import jadx.core.deobf.NameMapper;
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
-import jadx.core.dex.attributes.FieldInitAttr;
+import jadx.core.dex.attributes.fldinit.FieldInitAttr;
 import jadx.core.dex.info.AccessInfo;
 import jadx.core.dex.info.ClassInfo;
 import jadx.core.dex.info.ConstStorage;
@@ -63,7 +63,7 @@ public class AndroidResourcesUtils {
 		return newResCls;
 	}
 
-	public static boolean handleAppResField(CodeWriter code, ClassGen clsGen, ClassInfo declClass) {
+	public static boolean handleAppResField(ICodeWriter code, ClassGen clsGen, ClassInfo declClass) {
 		ClassInfo parentClass = declClass.getParentClass();
 		if (parentClass != null && parentClass.getShortName().equals("R")) {
 			clsGen.useClass(code, parentClass);

@@ -38,29 +38,50 @@ public class TestInput {
 		decompile("class", "samples/HelloWorld.class");
 	}
 
-	private void decompile(String tmpDirName, String inputSample) throws URISyntaxException, IOException {
+	@Test
+	public void testMultipleInput() throws Exception {
+		decompile("multi", "samples/hello.dex", "samples/HelloWorld.smali");
+	}
+
+	private void decompile(String tmpDirName, String... inputSamples) throws URISyntaxException, IOException {
 		StringBuilder args = new StringBuilder();
 		Path tempDir = FileUtils.createTempDir(tmpDirName);
-		args.append("-v ");
-		args.append("-d ").append(tempDir.toAbsolutePath()).append(' ');
+		args.append("-v");
+		args.append(" -d ").append(tempDir.toAbsolutePath());
 
-		URL resource = getClass().getClassLoader().getResource(inputSample);
-		assertThat(resource).isNotNull();
-		String sampleFile = resource.toURI().getRawPath();
-		args.append(sampleFile);
+		for (String inputSample : inputSamples) {
+			URL resource = getClass().getClassLoader().getResource(inputSample);
+			assertThat(resource).isNotNull();
+			String sampleFile = resource.toURI().getRawPath();
+			args.append(' ').append(sampleFile);
+		}
 
 		int result = JadxCLI.execute(args.toString().split(" "));
 		assertThat(result).isEqualTo(0);
 		List<Path> resultJavaFiles = collectJavaFilesInDir(tempDir);
 		assertThat(resultJavaFiles).isNotEmpty();
+
+		// do not copy input files as resources
+		PathMatcher logAllFiles = path -> {
+			LOG.debug("File in result dir: {}", path);
+			return true;
+		};
+		for (Path path : collectFilesInDir(tempDir, logAllFiles)) {
+			for (String inputSample : inputSamples) {
+				assertThat(path.toAbsolutePath().toString()).doesNotContain(inputSample);
+			}
+		}
 	}
 
 	private static List<Path> collectJavaFilesInDir(Path dir) throws IOException {
-		PathMatcher matcher = dir.getFileSystem().getPathMatcher("glob:**.java");
+		PathMatcher javaMatcher = dir.getFileSystem().getPathMatcher("glob:**.java");
+		return collectFilesInDir(dir, javaMatcher);
+	}
+
+	private static List<Path> collectFilesInDir(Path dir, PathMatcher matcher) throws IOException {
 		try (Stream<Path> pathStream = Files.walk(dir)) {
 			return pathStream
 					.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS))
-					.peek(f -> LOG.debug("File in result dir: {}", f))
 					.filter(matcher::matches)
 					.collect(Collectors.toList());
 		}

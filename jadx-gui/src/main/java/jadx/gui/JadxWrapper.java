@@ -1,14 +1,14 @@
 package jadx.gui;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.stream.Collectors;
 
-import javax.swing.*;
+import javax.swing.ProgressMonitor;
 
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -19,25 +19,30 @@ import jadx.api.JadxDecompiler;
 import jadx.api.JavaClass;
 import jadx.api.JavaPackage;
 import jadx.api.ResourceFile;
+import jadx.gui.settings.JadxProject;
 import jadx.gui.settings.JadxSettings;
+
+import static jadx.gui.utils.FileUtils.toFiles;
 
 public class JadxWrapper {
 	private static final Logger LOG = LoggerFactory.getLogger(JadxWrapper.class);
 
 	private final JadxSettings settings;
 	private JadxDecompiler decompiler;
-	private File openFile;
+	private JadxProject project;
+	private List<Path> openPaths = Collections.emptyList();
 
 	public JadxWrapper(JadxSettings settings) {
 		this.settings = settings;
 	}
 
-	public void openFile(File file) {
+	public void openFile(List<Path> paths) {
 		close();
-		this.openFile = file;
+		this.openPaths = paths;
 		try {
 			JadxArgs jadxArgs = settings.toJadxArgs();
-			jadxArgs.setInputFile(file);
+			jadxArgs.setInputFiles(toFiles(paths));
+			jadxArgs.setCodeData(project.getCodeData());
 
 			this.decompiler = new JadxDecompiler(jadxArgs);
 			this.decompiler.load();
@@ -55,28 +60,17 @@ public class JadxWrapper {
 				LOG.error("jadx decompiler close error", e);
 			}
 		}
+		this.openPaths = Collections.emptyList();
 	}
 
 	public void saveAll(File dir, ProgressMonitor progressMonitor) {
 		Runnable save = () -> {
-			try {
-				decompiler.getArgs().setRootDir(dir);
-				ThreadPoolExecutor ex = (ThreadPoolExecutor) decompiler.getSaveExecutor();
-				ex.shutdown();
-				while (ex.isTerminating()) {
-					long total = ex.getTaskCount();
-					long done = ex.getCompletedTaskCount();
-					progressMonitor.setProgress((int) (done * 100.0 / total));
-					Thread.sleep(500);
-				}
-				progressMonitor.close();
-				LOG.info("decompilation complete, freeing memory ...");
-				decompiler.getClasses().forEach(JavaClass::unload);
-				LOG.info("done");
-			} catch (InterruptedException e) {
-				LOG.error("Save interrupted", e);
-				Thread.currentThread().interrupt();
-			}
+			decompiler.getArgs().setRootDir(dir);
+			decompiler.save(500, (done, total) -> progressMonitor.setProgress((int) (done * 100.0 / total)));
+			progressMonitor.close();
+			LOG.info("decompilation complete, freeing memory ...");
+			decompiler.getClasses().forEach(JavaClass::unload);
+			LOG.info("done");
 		};
 		new Thread(save).start();
 	}
@@ -139,8 +133,8 @@ public class JadxWrapper {
 		return decompiler.getResources();
 	}
 
-	public File getOpenFile() {
-		return openFile;
+	public List<Path> getOpenPaths() {
+		return openPaths;
 	}
 
 	public JadxDecompiler getDecompiler() {
@@ -151,10 +145,14 @@ public class JadxWrapper {
 		return decompiler.getArgs();
 	}
 
+	public void setProject(JadxProject project) {
+		this.project = project;
+	}
+
 	/**
 	 * @param fullName Full name of an outer class. Inner classes are not supported.
 	 */
-	public @Nullable JavaClass searchJavaClassByClassName(String fullName) {
+	public @Nullable JavaClass searchJavaClassByFullAlias(String fullName) {
 		return decompiler.getClasses().stream()
 				.filter(cls -> cls.getFullName().equals(fullName))
 				.findFirst()
@@ -162,10 +160,7 @@ public class JadxWrapper {
 	}
 
 	public @Nullable JavaClass searchJavaClassByOrigClassName(String fullName) {
-		return decompiler.getClasses().stream()
-				.filter(cls -> cls.getClassNode().getClassInfo().getFullName().equals(fullName))
-				.findFirst()
-				.orElse(null);
+		return decompiler.searchJavaClassByOrigFullName(fullName);
 	}
 
 	/**

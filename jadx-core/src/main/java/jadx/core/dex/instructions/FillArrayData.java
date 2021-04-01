@@ -14,7 +14,7 @@ import jadx.core.utils.exceptions.JadxRuntimeException;
 
 public final class FillArrayData extends InsnNode {
 
-	private static final ArgType ONE_BYTE_TYPE = ArgType.unknown(PrimitiveType.BOOLEAN, PrimitiveType.BYTE);
+	private static final ArgType ONE_BYTE_TYPE = ArgType.unknown(PrimitiveType.BYTE, PrimitiveType.BOOLEAN);
 	private static final ArgType TWO_BYTES_TYPE = ArgType.unknown(PrimitiveType.SHORT, PrimitiveType.CHAR);
 	private static final ArgType FOUR_BYTES_TYPE = ArgType.unknown(PrimitiveType.INT, PrimitiveType.FLOAT);
 	private static final ArgType EIGHT_BYTES_TYPE = ArgType.unknown(PrimitiveType.LONG, PrimitiveType.DOUBLE);
@@ -39,6 +39,7 @@ public final class FillArrayData extends InsnNode {
 	private static ArgType getElementType(int elementWidthUnit) {
 		switch (elementWidthUnit) {
 			case 1:
+			case 0:
 				return ONE_BYTE_TYPE;
 			case 2:
 				return TWO_BYTES_TYPE;

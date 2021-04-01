@@ -9,6 +9,8 @@ import jadx.api.plugins.input.insns.InsnData;
 import jadx.api.plugins.input.insns.custom.IArrayPayload;
 import jadx.api.plugins.input.insns.custom.ISwitchPayload;
 import jadx.core.Consts;
+import jadx.core.dex.attributes.AType;
+import jadx.core.dex.attributes.nodes.JadxError;
 import jadx.core.dex.info.FieldInfo;
 import jadx.core.dex.info.MethodInfo;
 import jadx.core.dex.instructions.args.ArgType;
@@ -40,18 +42,19 @@ public class InsnDecoder {
 			try {
 				rawInsn.decode();
 				insn = decode(rawInsn);
-				insn.setOffset(offset);
 			} catch (Exception e) {
-				LOG.error("Failed to decode insn: " + rawInsn + ", method: " + method, e);
+				method.addError("Failed to decode insn: " + rawInsn + ", method: " + method, e);
 				insn = new InsnNode(InsnType.NOP, 0);
+				insn.addAttr(AType.JADX_ERROR, new JadxError("decode failed: " + e.getMessage(), e));
 			}
+			insn.setOffset(offset);
 			instructions[offset] = insn;
 		});
 		return instructions;
 	}
 
 	@NotNull
-	private InsnNode decode(InsnData insn) throws DecodeException {
+	protected InsnNode decode(InsnData insn) throws DecodeException {
 		switch (insn.getOpcode()) {
 			case NOP:
 				return new InsnNode(InsnType.NOP, 0);
@@ -415,6 +418,8 @@ public class InsnDecoder {
 				return invoke(insn, InvokeType.SUPER, false);
 			case INVOKE_VIRTUAL:
 				return invoke(insn, InvokeType.VIRTUAL, false);
+			case INVOKE_CUSTOM:
+				return invoke(insn, InvokeType.CUSTOM, false);
 
 			case INVOKE_DIRECT_RANGE:
 				return invoke(insn, InvokeType.DIRECT, true);
@@ -424,6 +429,8 @@ public class InsnDecoder {
 				return invoke(insn, InvokeType.SUPER, true);
 			case INVOKE_VIRTUAL_RANGE:
 				return invoke(insn, InvokeType.VIRTUAL, true);
+			case INVOKE_CUSTOM_RANGE:
+				return invoke(insn, InvokeType.CUSTOM, true);
 
 			case NEW_INSTANCE:
 				ArgType clsType = ArgType.parse(insn.getIndexAsType());
@@ -521,6 +528,9 @@ public class InsnDecoder {
 	}
 
 	private InsnNode invoke(InsnData insn, InvokeType type, boolean isRange) {
+		if (type == InvokeType.CUSTOM) {
+			return InvokeCustomBuilder.build(method, insn, isRange);
+		}
 		MethodInfo mthInfo = MethodInfo.fromRef(root, insn.getIndexAsMethod());
 		return new InvokeNode(mthInfo, insn, type, isRange);
 	}
@@ -542,19 +552,11 @@ public class InsnDecoder {
 	}
 
 	private InsnNode arith(InsnData insn, ArithOp op, ArgType type) {
-		return new ArithNode(insn, op, fixTypeForBitOps(op, type), false);
+		return ArithNode.build(insn, op, type);
 	}
 
 	private InsnNode arithLit(InsnData insn, ArithOp op, ArgType type) {
-		return new ArithNode(insn, op, fixTypeForBitOps(op, type), true);
-	}
-
-	private ArgType fixTypeForBitOps(ArithOp op, ArgType type) {
-		if (type == ArgType.INT
-				&& (op == ArithOp.AND || op == ArithOp.OR || op == ArithOp.XOR)) {
-			return ArgType.NARROW_NUMBERS_NO_FLOAT;
-		}
-		return type;
+		return ArithNode.buildLit(insn, op, type);
 	}
 
 	private InsnNode neg(InsnData insn, ArgType type) {

@@ -53,10 +53,18 @@ public class NameGen {
 				"java.lang.Exception", "exc");
 	}
 
-	public NameGen(MethodNode mth, boolean fallback) {
+	public NameGen(MethodNode mth, ClassGen classGen) {
 		this.mth = mth;
-		this.fallback = fallback;
+		this.fallback = classGen.isFallbackMode();
+		NameGen outerNameGen = classGen.getOuterNameGen();
+		if (outerNameGen != null) {
+			inheritUsedNames(outerNameGen);
+		}
 		addNamesUsedInClass();
+	}
+
+	public void inheritUsedNames(NameGen otherNameGen) {
+		varNames.addAll(otherNameGen.varNames);
 	}
 
 	private void addNamesUsedInClass() {
@@ -126,9 +134,6 @@ public class NameGen {
 		}
 		if (!NameMapper.isValidAndPrintable(name)) {
 			name = getFallbackName(var);
-		}
-		if (Consts.DEBUG) {
-			name += '_' + getFallbackName(var);
 		}
 		return name;
 	}

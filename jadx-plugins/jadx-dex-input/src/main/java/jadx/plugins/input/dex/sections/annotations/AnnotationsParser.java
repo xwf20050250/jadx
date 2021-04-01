@@ -27,6 +27,10 @@ public class AnnotationsParser {
 		this.ext = ext;
 	}
 
+	public AnnotationsParser copy() {
+		return new AnnotationsParser(in.copy(), ext.copy());
+	}
+
 	public void setOffset(int offset) {
 		this.offset = offset;
 		if (offset == 0) {
@@ -163,5 +167,9 @@ public class AnnotationsParser {
 
 	public EncodedValue parseEncodedValue(SectionReader in) {
 		return EncodedValueParser.parseValue(in, ext);
+	}
+
+	public List<EncodedValue> parseEncodedArray(SectionReader in) {
+		return EncodedValueParser.parseEncodedArray(in, ext);
 	}
 }

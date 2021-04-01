@@ -1,7 +1,8 @@
 package jadx.plugins.input.dex.smali;
 
-import jadx.api.plugins.input.data.AccessFlags;
-import jadx.api.plugins.input.data.ICodeReader;
+import java.util.*;
+
+import jadx.api.plugins.input.data.*;
 import jadx.plugins.input.dex.sections.DexMethodData;
 import jadx.plugins.input.dex.sections.DexMethodRef;
 

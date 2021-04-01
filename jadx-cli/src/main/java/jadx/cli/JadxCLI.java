@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import jadx.api.JadxArgs;
 import jadx.api.JadxDecompiler;
 import jadx.api.impl.NoOpCodeCache;
+import jadx.api.impl.SimpleCodeWriter;
 import jadx.core.utils.exceptions.JadxArgsValidateException;
 import jadx.core.utils.files.FileUtils;
 
@@ -38,9 +39,17 @@ public class JadxCLI {
 
 	private static int processAndSave(JadxArgs jadxArgs) {
 		jadxArgs.setCodeCache(new NoOpCodeCache());
+		jadxArgs.setCodeWriterProvider(SimpleCodeWriter::new);
 		try (JadxDecompiler jadx = new JadxDecompiler(jadxArgs)) {
 			jadx.load();
-			jadx.save();
+			if (LogHelper.getLogLevel() == LogHelper.LogLevelEnum.QUIET) {
+				jadx.save();
+			} else {
+				jadx.save(500, (done, total) -> {
+					int progress = (int) (done * 100.0 / total);
+					System.out.printf("INFO  - progress: %d of %d (%d%%)\r", done, total, progress);
+				});
+			}
 			int errorsCount = jadx.getErrorsCount();
 			if (errorsCount != 0) {
 				jadx.printErrorsReport();

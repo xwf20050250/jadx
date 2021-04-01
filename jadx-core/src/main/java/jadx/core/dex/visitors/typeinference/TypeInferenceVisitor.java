@@ -10,6 +10,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +21,8 @@ import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.PhiListAttr;
 import jadx.core.dex.info.ClassInfo;
+import jadx.core.dex.instructions.ArithNode;
+import jadx.core.dex.instructions.ArithOp;
 import jadx.core.dex.instructions.BaseInvokeNode;
 import jadx.core.dex.instructions.IndexInsnNode;
 import jadx.core.dex.instructions.InsnType;
@@ -330,6 +333,10 @@ public final class TypeInferenceVisitor extends AbstractVisitor {
 				return invokeUseBound;
 			}
 		}
+		if (insn.getType() == InsnType.CHECK_CAST && insn.contains(AFlag.SOFT_CAST)) {
+			// ignore
+			return null;
+		}
 		return new TypeBoundConst(BoundEnum.USE, regArg.getInitType(), regArg);
 	}
 
@@ -497,30 +504,70 @@ public final class TypeInferenceVisitor extends AbstractVisitor {
 				if (insertAssignCast(mth, var, boundType)) {
 					return 1;
 				}
-				// TODO: check if use casts are needed
-				return 0;
+				return insertUseCasts(mth, var);
 			}
 		}
 		return 0;
 	}
 
+	private int insertUseCasts(MethodNode mth, SSAVar var) {
+		List<RegisterArg> useList = var.getUseList();
+		if (useList.isEmpty()) {
+			return 0;
+		}
+		int useCasts = 0;
+		for (RegisterArg useReg : new ArrayList<>(useList)) {
+			if (insertSoftUseCast(mth, useReg)) {
+				useCasts++;
+			}
+		}
+		return useCasts;
+	}
+
 	private boolean insertAssignCast(MethodNode mth, SSAVar var, ArgType castType) {
 		RegisterArg assignArg = var.getAssign();
 		InsnNode assignInsn = assignArg.getParentInsn();
+		if (assignInsn == null || assignInsn.getType() == InsnType.PHI) {
+			return false;
+		}
 		BlockNode assignBlock = BlockUtils.getBlockByInsn(mth, assignInsn);
 		if (assignBlock == null) {
 			return false;
 		}
 		RegisterArg newAssignArg = assignArg.duplicateWithNewSSAVar(mth);
 		assignInsn.setResult(newAssignArg);
+		IndexInsnNode castInsn = makeSoftCastInsn(assignArg, newAssignArg, castType);
+		return BlockUtils.insertAfterInsn(assignBlock, assignInsn, castInsn);
+	}
 
+	private boolean insertSoftUseCast(MethodNode mth, RegisterArg useArg) {
+		InsnNode useInsn = useArg.getParentInsn();
+		if (useInsn == null || useInsn.getType() == InsnType.PHI) {
+			return false;
+		}
+		if (useInsn.getType() == InsnType.IF && useInsn.getArg(1).isZeroLiteral()) {
+			// cast not needed if compare with null
+			return false;
+		}
+		BlockNode useBlock = BlockUtils.getBlockByInsn(mth, useInsn);
+		if (useBlock == null) {
+			return false;
+		}
+		RegisterArg newUseArg = useArg.duplicateWithNewSSAVar(mth);
+		useInsn.replaceArg(useArg, newUseArg);
+
+		IndexInsnNode castInsn = makeSoftCastInsn(newUseArg, useArg, useArg.getInitType());
+		return BlockUtils.insertBeforeInsn(useBlock, useInsn, castInsn);
+	}
+
+	@NotNull
+	private IndexInsnNode makeSoftCastInsn(RegisterArg result, RegisterArg arg, ArgType castType) {
 		IndexInsnNode castInsn = new IndexInsnNode(InsnType.CHECK_CAST, castType, 1);
-		castInsn.setResult(assignArg.duplicate());
-		castInsn.addArg(newAssignArg.duplicate());
+		castInsn.setResult(result.duplicate());
+		castInsn.addArg(arg.duplicate());
 		castInsn.add(AFlag.SOFT_CAST);
 		castInsn.add(AFlag.SYNTHETIC);
-
-		return BlockUtils.insertAfterInsn(assignBlock, assignInsn, castInsn);
+		return castInsn;
 	}
 
 	private boolean trySplitConstInsns(MethodNode mth) {
@@ -539,6 +586,10 @@ public final class TypeInferenceVisitor extends AbstractVisitor {
 	}
 
 	private boolean checkAndSplitConstInsn(MethodNode mth, SSAVar var) {
+		ArgType type = var.getTypeInfo().getType();
+		if (type.isTypeKnown() || var.isTypeImmutable()) {
+			return false;
+		}
 		if (var.getUsedInPhi().size() < 2) {
 			return false;
 		}
@@ -736,15 +787,20 @@ public final class TypeInferenceVisitor extends AbstractVisitor {
 		if (typeInfo.getType().isTypeKnown()) {
 			return false;
 		}
-		boolean boolAssign = false;
 		for (ITypeBound bound : typeInfo.getBounds()) {
-			if (bound.getBound() == BoundEnum.ASSIGN && bound.getType().equals(ArgType.BOOLEAN)) {
-				boolAssign = true;
-				break;
+			ArgType boundType = bound.getType();
+			switch (bound.getBound()) {
+				case ASSIGN:
+					if (!boundType.contains(PrimitiveType.BOOLEAN)) {
+						return false;
+					}
+					break;
+				case USE:
+					if (!boundType.canBeAnyNumber()) {
+						return false;
+					}
+					break;
 			}
-		}
-		if (!boolAssign) {
-			return false;
 		}
 
 		boolean fixed = false;
@@ -759,7 +815,8 @@ public final class TypeInferenceVisitor extends AbstractVisitor {
 
 	private boolean fixBooleanUsage(MethodNode mth, ITypeBound bound) {
 		ArgType boundType = bound.getType();
-		if (!boundType.isPrimitive() || boundType == ArgType.BOOLEAN) {
+		if (boundType == ArgType.BOOLEAN
+				|| (boundType.isTypeKnown() && !boundType.isPrimitive())) {
 			return false;
 		}
 		RegisterArg boundArg = bound.getArg();
@@ -767,7 +824,7 @@ public final class TypeInferenceVisitor extends AbstractVisitor {
 			return false;
 		}
 		InsnNode insn = boundArg.getParentInsn();
-		if (insn == null) {
+		if (insn == null || insn.getType() == InsnType.IF) {
 			return false;
 		}
 		BlockNode blockNode = BlockUtils.getBlockByInsn(mth, insn);
@@ -779,19 +836,45 @@ public final class TypeInferenceVisitor extends AbstractVisitor {
 		if (insnIndex == -1) {
 			return false;
 		}
-		if (insn.getType() == InsnType.CAST) {
+		InsnType insnType = insn.getType();
+		if (insnType == InsnType.CAST) {
 			// replace cast
 			ArgType type = (ArgType) ((IndexInsnNode) insn).getIndex();
 			TernaryInsn convertInsn = prepareBooleanConvertInsn(insn.getResult(), boundArg, type);
 			BlockUtils.replaceInsn(mth, blockNode, insnIndex, convertInsn);
-		} else {
-			// insert before insn
-			RegisterArg resultArg = boundArg.duplicateWithNewSSAVar(mth);
-			TernaryInsn convertInsn = prepareBooleanConvertInsn(resultArg, boundArg, boundType);
-			insnList.add(insnIndex, convertInsn);
-			insn.replaceArg(bound.getArg(), convertInsn.getResult().duplicate());
+			return true;
 		}
+		if (insnType == InsnType.ARITH) {
+			ArithNode arithInsn = (ArithNode) insn;
+			if (arithInsn.getOp() == ArithOp.XOR && arithInsn.getArgsCount() == 2) {
+				// replace (boolean ^ 1) with (!boolean)
+				InsnArg secondArg = arithInsn.getArg(1);
+				if (secondArg.isLiteral() && ((LiteralArg) secondArg).getLiteral() == 1) {
+					InsnNode convertInsn = notBooleanToInt(arithInsn, boundArg);
+					BlockUtils.replaceInsn(mth, blockNode, insnIndex, convertInsn);
+					return true;
+				}
+			}
+		}
+
+		// insert before insn
+		RegisterArg resultArg = boundArg.duplicateWithNewSSAVar(mth);
+		TernaryInsn convertInsn = prepareBooleanConvertInsn(resultArg, boundArg, boundType);
+		insnList.add(insnIndex, convertInsn);
+		insn.replaceArg(boundArg, convertInsn.getResult().duplicate());
 		return true;
+	}
+
+	private InsnNode notBooleanToInt(ArithNode insn, RegisterArg boundArg) {
+		InsnNode notInsn = new InsnNode(InsnType.NOT, 1);
+		notInsn.addArg(boundArg.duplicate());
+		notInsn.add(AFlag.SYNTHETIC);
+
+		InsnArg notArg = InsnArg.wrapArg(notInsn);
+		notArg.setType(ArgType.BOOLEAN);
+		TernaryInsn convertInsn = ModVisitor.makeBooleanConvertInsn(insn.getResult(), notArg, ArgType.INT);
+		convertInsn.add(AFlag.SYNTHETIC);
+		return convertInsn;
 	}
 
 	private TernaryInsn prepareBooleanConvertInsn(RegisterArg resultArg, RegisterArg boundArg, ArgType useType) {

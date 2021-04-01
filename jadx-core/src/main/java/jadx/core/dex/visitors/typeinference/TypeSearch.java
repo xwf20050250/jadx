@@ -34,6 +34,7 @@ import jadx.core.dex.nodes.MethodNode;
 public class TypeSearch {
 	private static final Logger LOG = LoggerFactory.getLogger(TypeSearch.class);
 
+	private static final int VARS_PROCESS_LIMIT = 5_000;
 	private static final int CANDIDATES_COUNT_LIMIT = 10;
 	private static final int SEARCH_ITERATION_LIMIT = 1_000_000;
 
@@ -50,6 +51,11 @@ public class TypeSearch {
 	}
 
 	public boolean run() {
+		if (mth.getSVars().size() > VARS_PROCESS_LIMIT) {
+			mth.addWarnComment("Multi-variable search skipped. Vars limit reached: " + mth.getSVars().size()
+					+ " (expected less than " + VARS_PROCESS_LIMIT + ")");
+			return false;
+		}
 		mth.getSVars().forEach(this::fillTypeCandidates);
 		mth.getSVars().forEach(this::collectConstraints);
 
@@ -75,17 +81,23 @@ public class TypeSearch {
 
 	private boolean applyResolvedVars() {
 		List<TypeSearchVarInfo> resolvedVars = state.getResolvedVars();
+		List<TypeSearchVarInfo> updatedVars = new ArrayList<>();
 		for (TypeSearchVarInfo var : resolvedVars) {
 			SSAVar ssaVar = var.getVar();
 			ArgType resolvedType = var.getCurrentType();
-			ssaVar.setType(resolvedType);
-		}
-		boolean applySuccess = true;
-		for (TypeSearchVarInfo var : resolvedVars) {
-			if (!var.getCurrentType().isTypeKnown()) {
-				// exclude unknown variables
+			if (!resolvedType.isTypeKnown()) {
+				// ignore unknown variables
 				continue;
 			}
+			if (resolvedType.equals(ssaVar.getTypeInfo().getType())) {
+				// type already set
+				continue;
+			}
+			ssaVar.setType(resolvedType);
+			updatedVars.add(var);
+		}
+		boolean applySuccess = true;
+		for (TypeSearchVarInfo var : updatedVars) {
 			TypeUpdateResult res = typeUpdate.applyWithWiderIgnSame(mth, var.getVar(), var.getCurrentType());
 			if (res == TypeUpdateResult.REJECT) {
 				mth.addComment("JADX DEBUG: Multi-variable search result rejected for " + var);

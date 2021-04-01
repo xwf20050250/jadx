@@ -11,6 +11,7 @@ import io.reactivex.Flowable;
 
 import jadx.api.JavaClass;
 import jadx.gui.treemodel.CodeNode;
+import jadx.gui.treemodel.JClass;
 import jadx.gui.utils.UiUtils;
 
 public class CodeIndex {
@@ -23,29 +24,33 @@ public class CodeIndex {
 		values.add(value);
 	}
 
-	public void removeForCls(JavaClass cls) {
+	public synchronized void removeForCls(JavaClass cls) {
 		values.removeIf(v -> v.getJavaNode().getTopParentClass().equals(cls));
 	}
 
-	private boolean isMatched(StringRef key, String str, boolean caseInsensitive) {
-		return key.indexOf(str, caseInsensitive) != -1;
+	private boolean isMatched(StringRef key, SearchSettings searchSettings) {
+		return searchSettings.isMatch(key);
 	}
 
-	public Flowable<CodeNode> search(final String searchStr, final boolean caseInsensitive) {
+	public Flowable<CodeNode> search(final SearchSettings searchSettings) {
+		JClass activeCls = searchSettings.getActiveCls();
 		return Flowable.create(emitter -> {
-			LOG.debug("Code search started: {} ...", searchStr);
+			LOG.debug("Code search started: {} ...", searchSettings.getSearchString());
 			for (CodeNode node : values) {
-				if (isMatched(node.getLineStr(), searchStr, caseInsensitive)) {
-					emitter.onNext(node);
+				if (activeCls == null || node.getRootClass().equals(activeCls)) {
+					int pos = searchSettings.find(node.getLineStr());
+					if (pos > -1) {
+						emitter.onNext(node);
+					}
 				}
 				if (emitter.isCancelled()) {
-					LOG.debug("Code search canceled: {}", searchStr);
+					LOG.debug("Code search canceled: {}", searchSettings.getSearchString());
 					return;
 				}
 			}
-			LOG.debug("Code search complete: {}, memory usage: {}", searchStr, UiUtils.memoryInfo());
+			LOG.debug("Code search complete: {}, memory usage: {}", searchSettings.getSearchString(), UiUtils.memoryInfo());
 			emitter.onComplete();
-		}, BackpressureStrategy.LATEST);
+		}, BackpressureStrategy.BUFFER);
 	}
 
 	public int size() {
