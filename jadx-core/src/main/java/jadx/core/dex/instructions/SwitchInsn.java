@@ -5,7 +5,6 @@ import java.util.List;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import jadx.api.ICodeWriter;
 import jadx.core.dex.instructions.args.InsnArg;
 import jadx.core.dex.nodes.BlockNode;
 import jadx.core.dex.nodes.InsnNode;
@@ -33,16 +32,13 @@ public class SwitchInsn extends TargetInsnNode {
 		this.packed = packed;
 	}
 
+	public boolean needData() {
+		return this.switchData == null;
+	}
+
 	public void attachSwitchData(SwitchData data, int def) {
 		this.switchData = data;
 		this.def = def;
-		// fix targets
-		int switchOffset = getOffset();
-		int size = data.getSize();
-		int[] targets = data.getTargets();
-		for (int i = 0; i < size; i++) {
-			targets[i] += switchOffset;
-		}
 	}
 
 	@Override
@@ -106,7 +102,7 @@ public class SwitchInsn extends TargetInsnNode {
 	@Override
 	public String toString() {
 		StringBuilder sb = new StringBuilder();
-		sb.append(super.toString());
+		sb.append(baseString());
 		if (switchData == null) {
 			sb.append("no payload");
 		} else {
@@ -114,24 +110,25 @@ public class SwitchInsn extends TargetInsnNode {
 			int[] keys = switchData.getKeys();
 			if (targetBlocks != null) {
 				for (int i = 0; i < size; i++) {
-					sb.append(ICodeWriter.NL);
+					sb.append('\n');
 					sb.append(" case ").append(keys[i]).append(": goto ").append(targetBlocks[i]);
 				}
 				if (def != -1) {
-					sb.append(ICodeWriter.NL).append(" default: goto ").append(defTargetBlock);
+					sb.append('\n').append(" default: goto ").append(defTargetBlock);
 				}
 			} else {
 				int[] targets = switchData.getTargets();
 				for (int i = 0; i < size; i++) {
-					sb.append(ICodeWriter.NL);
+					sb.append('\n');
 					sb.append(" case ").append(keys[i]).append(": goto ").append(InsnUtils.formatOffset(targets[i]));
 				}
 				if (def != -1) {
-					sb.append(ICodeWriter.NL);
+					sb.append('\n');
 					sb.append(" default: goto ").append(InsnUtils.formatOffset(def));
 				}
 			}
 		}
+		appendAttributes(sb);
 		return sb.toString();
 	}
 

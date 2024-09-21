@@ -99,7 +99,7 @@ public class DeboxingVisitor extends AbstractVisitor {
 				}
 				arg.setType(primitiveType);
 				boolean forbidInline;
-				if (canChangeTypeToPrimitive(resArg)) {
+				if (canChangeTypeToPrimitive(resArg, boxType)) {
 					resArg.setType(primitiveType);
 					forbidInline = false;
 				} else {
@@ -132,11 +132,28 @@ public class DeboxingVisitor extends AbstractVisitor {
 		return false;
 	}
 
-	private boolean canChangeTypeToPrimitive(RegisterArg arg) {
+	private boolean canChangeTypeToPrimitive(RegisterArg arg, ArgType boxType) {
 		for (SSAVar ssaVar : arg.getSVar().getCodeVar().getSsaVars()) {
 			if (ssaVar.isTypeImmutable()) {
 				return false;
 			}
+			InsnNode assignInsn = ssaVar.getAssignInsn();
+			if (assignInsn == null) {
+				// method arg
+				return false;
+			}
+			InsnType assignInsnType = assignInsn.getType();
+			if (assignInsnType == InsnType.CONST || assignInsnType == InsnType.MOVE) {
+				if (assignInsn.getArg(0).getType().isObject()) {
+					return false;
+				}
+			}
+			ArgType initType = assignInsn.getResult().getInitType();
+			if (initType.isObject() && !initType.equals(boxType)) {
+				// some of related vars have another object type
+				return false;
+			}
+
 			for (RegisterArg useArg : ssaVar.getUseList()) {
 				InsnNode parentInsn = useArg.getParentInsn();
 				if (parentInsn == null) {

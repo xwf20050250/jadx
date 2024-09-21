@@ -83,6 +83,10 @@ public class RegisterArg extends InsnArg implements Named {
 		this.sVar = sVar;
 	}
 
+	public void resetSSAVar() {
+		this.sVar = null;
+	}
+
 	@Override
 	public String getName() {
 		if (isSuper()) {
@@ -181,8 +185,16 @@ public class RegisterArg extends InsnArg implements Named {
 		return regNum == ((RegisterArg) arg).getRegNum();
 	}
 
+	public boolean sameType(InsnArg arg) {
+		return this.getType().equals(arg.getType());
+	}
+
 	public boolean sameCodeVar(RegisterArg arg) {
 		return this.getSVar().getCodeVar() == arg.getSVar().getCodeVar();
+	}
+
+	public boolean isLinkedToOtherSsaVars() {
+		return getSVar().getCodeVar().getSsaVars().size() > 1;
 	}
 
 	@Override
@@ -201,6 +213,16 @@ public class RegisterArg extends InsnArg implements Named {
 		RegisterArg other = (RegisterArg) obj;
 		return regNum == other.regNum
 				&& Objects.equals(sVar, other.getSVar());
+	}
+
+	@Override
+	public String toShortString() {
+		StringBuilder sb = new StringBuilder();
+		sb.append("r").append(regNum);
+		if (sVar != null) {
+			sb.append('v').append(sVar.getVersion());
+		}
+		return sb.toString();
 	}
 
 	@Override

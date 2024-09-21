@@ -8,13 +8,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.WeakHashMap;
 
-import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import jadx.core.Consts;
 import jadx.core.dex.info.MethodInfo;
 import jadx.core.dex.instructions.args.ArgType;
 import jadx.core.dex.nodes.ClassNode;
@@ -30,8 +29,9 @@ public class ClspGraph {
 	private static final Logger LOG = LoggerFactory.getLogger(ClspGraph.class);
 
 	private final RootNode root;
-	private final Map<String, Set<String>> superTypesCache = Collections.synchronizedMap(new WeakHashMap<>());
 	private Map<String, ClspClass> nameMap;
+	private Map<String, Set<String>> superTypesCache;
+	private Map<String, List<String>> implementsCache;
 
 	private final Set<String> missingClasses = new HashSet<>();
 
@@ -39,7 +39,7 @@ public class ClspGraph {
 		this.root = rootNode;
 	}
 
-	public void load() throws IOException, DecodeException {
+	public void loadClsSetFile() throws IOException, DecodeException {
 		ClsSet set = new ClsSet(root);
 		set.loadFromClstFile();
 		addClasspath(set);
@@ -56,11 +56,16 @@ public class ClspGraph {
 
 	public void addApp(List<ClassNode> classes) {
 		if (nameMap == null) {
-			throw new JadxRuntimeException("Classpath must be loaded first");
+			nameMap = new HashMap<>(classes.size());
 		}
 		for (ClassNode cls : classes) {
 			addClass(cls);
 		}
+	}
+
+	public void initCache() {
+		fillSuperTypesCache();
+		fillImplementsCache();
 	}
 
 	public boolean isClsKnown(String fullName) {
@@ -102,7 +107,7 @@ public class ClspGraph {
 	private void addClass(ClassNode cls) {
 		ArgType clsType = cls.getClassInfo().getType();
 		String rawName = clsType.getObject();
-		ClspClass clspClass = new ClspClass(clsType, -1);
+		ClspClass clspClass = new ClspClass(clsType, -1, cls.getAccessFlags().rawValue(), ClspClassSource.APP);
 		clspClass.setParents(ClsSet.makeParentsArray(cls));
 		nameMap.put(rawName, clspClass);
 	}
@@ -116,13 +121,20 @@ public class ClspGraph {
 	}
 
 	public List<String> getImplementations(String clsName) {
-		List<String> list = new ArrayList<>();
-		for (String cls : nameMap.keySet()) {
-			if (isImplements(cls, clsName)) {
-				list.add(cls);
+		List<String> list = implementsCache.get(clsName);
+		return list == null ? Collections.emptyList() : list;
+	}
+
+	private void fillImplementsCache() {
+		Map<String, List<String>> map = new HashMap<>(nameMap.size());
+		List<String> classes = new ArrayList<>(nameMap.keySet());
+		Collections.sort(classes);
+		for (String cls : classes) {
+			for (String st : getSuperTypes(cls)) {
+				map.computeIfAbsent(st, v -> new ArrayList<>()).add(cls);
 			}
 		}
-		return list;
+		implementsCache = map;
 	}
 
 	public String getCommonAncestor(String clsName, String implClsName) {
@@ -159,29 +171,43 @@ public class ClspGraph {
 	}
 
 	public Set<String> getSuperTypes(String clsName) {
-		Set<String> fromCache = superTypesCache.get(clsName);
-		if (fromCache != null) {
-			return fromCache;
-		}
-		ClspClass cls = nameMap.get(clsName);
-		if (cls == null) {
-			missingClasses.add(clsName);
-			return Collections.emptySet();
-		}
-		Set<String> result = new HashSet<>();
-		addSuperTypes(cls, result);
-		return putInSuperTypesCache(clsName, result);
+		Set<String> result = superTypesCache.get(clsName);
+		return result == null ? Collections.emptySet() : result;
 	}
 
-	@NotNull
-	private Set<String> putInSuperTypesCache(String clsName, Set<String> result) {
-		if (result.isEmpty()) {
-			Set<String> empty = Collections.emptySet();
-			superTypesCache.put(clsName, result);
-			return empty;
+	private static final Set<String> OBJECT_SINGLE_SET = Collections.singleton(Consts.CLASS_OBJECT);
+
+	private void fillSuperTypesCache() {
+		Map<String, Set<String>> map = new HashMap<>(nameMap.size());
+		Set<String> tmpSet = new HashSet<>();
+		for (Map.Entry<String, ClspClass> entry : nameMap.entrySet()) {
+			ClspClass cls = entry.getValue();
+			tmpSet.clear();
+			addSuperTypes(cls, tmpSet);
+			Set<String> result;
+			int size = tmpSet.size();
+			switch (size) {
+				case 0: {
+					result = Collections.emptySet();
+					break;
+				}
+				case 1: {
+					String supCls = tmpSet.iterator().next();
+					if (supCls.equals(Consts.CLASS_OBJECT)) {
+						result = OBJECT_SINGLE_SET;
+					} else {
+						result = Collections.singleton(supCls);
+					}
+					break;
+				}
+				default: {
+					result = new HashSet<>(tmpSet);
+					break;
+				}
+			}
+			map.put(cls.getName(), result);
 		}
-		superTypesCache.put(clsName, result);
-		return result;
+		superTypesCache = map;
 	}
 
 	private void addSuperTypes(ClspClass cls, Set<String> result) {
@@ -195,6 +221,9 @@ public class ClspGraph {
 				if (isNew) {
 					addSuperTypes(parentCls, result);
 				}
+			} else {
+				// parent type is unknown
+				result.add(parentType.getObject());
 			}
 		}
 	}
@@ -203,9 +232,7 @@ public class ClspGraph {
 	private ClspClass getClspClass(ArgType clsType) {
 		ClspClass clspClass = nameMap.get(clsType.getObject());
 		if (clspClass == null) {
-			if (LOG.isDebugEnabled()) {
-				LOG.debug("External class not found: {}", clsType.getObject());
-			}
+			missingClasses.add(clsType.getObject());
 		}
 		return clspClass;
 	}

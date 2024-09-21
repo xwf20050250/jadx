@@ -3,15 +3,20 @@ package jadx.core.utils;
 import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.jetbrains.annotations.Nullable;
@@ -19,6 +24,7 @@ import org.jetbrains.annotations.Nullable;
 import jadx.api.ICodeWriter;
 import jadx.api.JadxDecompiler;
 import jadx.core.dex.visitors.DepthTraversal;
+import jadx.core.utils.exceptions.JadxRuntimeException;
 
 public class Utils {
 
@@ -38,11 +44,25 @@ public class Utils {
 		return obj;
 	}
 
+	public static String cutObject(String obj) {
+		if (obj.charAt(0) == 'L') {
+			return obj.substring(1, obj.length() - 1);
+		}
+		return obj;
+	}
+
 	public static String makeQualifiedObjectName(String obj) {
 		return 'L' + obj.replace('.', '/') + ';';
 	}
 
+	@SuppressWarnings("StringRepeatCanBeUsed")
 	public static String strRepeat(String str, int count) {
+		if (count < 1) {
+			return "";
+		}
+		if (count == 1) {
+			return str;
+		}
 		StringBuilder sb = new StringBuilder(str.length() * count);
 		for (int i = 0; i < count; i++) {
 			sb.append(str);
@@ -113,13 +133,37 @@ public class Utils {
 		return sb.toString();
 	}
 
+	public static String currentStackTrace() {
+		return getStackTrace(new Exception());
+	}
+
+	public static String currentStackTrace(int skipFrames) {
+		Exception e = new Exception();
+		StackTraceElement[] stackTrace = e.getStackTrace();
+		int len = stackTrace.length;
+		if (skipFrames < len) {
+			e.setStackTrace(Arrays.copyOfRange(stackTrace, skipFrames, len));
+		}
+		return getStackTrace(e);
+	}
+
+	public static String getFullStackTrace(Throwable throwable) {
+		return getStackTrace(throwable, false);
+	}
+
 	public static String getStackTrace(Throwable throwable) {
+		return getStackTrace(throwable, true);
+	}
+
+	private static String getStackTrace(Throwable throwable, boolean filter) {
 		if (throwable == null) {
 			return "";
 		}
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw, true);
-		filterRecursive(throwable);
+		if (filter) {
+			filterRecursive(throwable);
+		}
 		throwable.printStackTrace(pw);
 		return sw.getBuffer().toString();
 	}
@@ -206,6 +250,20 @@ public class Utils {
 		return result;
 	}
 
+	public static <T, R> List<R> collectionMapNoNull(Collection<T> list, Function<T, R> mapFunc) {
+		if (list == null || list.isEmpty()) {
+			return Collections.emptyList();
+		}
+		List<R> result = new ArrayList<>(list.size());
+		for (T t : list) {
+			R r = mapFunc.apply(t);
+			if (r != null) {
+				result.add(r);
+			}
+		}
+		return result;
+	}
+
 	public static <T> boolean containsInListByRef(List<T> list, T element) {
 		if (isEmpty(list)) {
 			return false;
@@ -269,6 +327,19 @@ public class Utils {
 		return result;
 	}
 
+	public static <T> Set<T> mergeSets(Set<T> first, Set<T> second) {
+		if (isEmpty(first)) {
+			return second;
+		}
+		if (isEmpty(second)) {
+			return first;
+		}
+		Set<T> result = new HashSet<>(first.size() + second.size());
+		result.addAll(first);
+		result.addAll(second);
+		return result;
+	}
+
 	public static Map<String, String> newConstStringMap(String... parameters) {
 		int len = parameters.length;
 		if (len == 0) {
@@ -300,12 +371,56 @@ public class Utils {
 		return result;
 	}
 
+	/**
+	 * Build map from list of values with value to key mapping function
+	 * <br>
+	 * Similar to:
+	 * <br>
+	 * {@code list.stream().collect(Collectors.toMap(mapKey, Function.identity())); }
+	 */
+	public static <K, V> Map<K, V> groupBy(List<V> list, Function<V, K> mapKey) {
+		Map<K, V> map = new HashMap<>(list.size());
+		for (V v : list) {
+			map.put(mapKey.apply(v), v);
+		}
+		return map;
+	}
+
+	/**
+	 * Simple DFS visit for tree (cycles not allowed)
+	 */
+	public static <T> void treeDfsVisit(T root, Function<T, List<T>> childrenProvider, Consumer<T> visitor) {
+		multiRootTreeDfsVisit(Collections.singletonList(root), childrenProvider, visitor);
+	}
+
+	public static <T> void multiRootTreeDfsVisit(List<T> roots, Function<T, List<T>> childrenProvider, Consumer<T> visitor) {
+		Deque<T> queue = new ArrayDeque<>(roots);
+		while (true) {
+			T current = queue.pollLast();
+			if (current == null) {
+				return;
+			}
+			visitor.accept(current);
+			for (T child : childrenProvider.apply(current)) {
+				queue.addLast(child);
+			}
+		}
+	}
+
 	@Nullable
 	public static <T> T getOne(@Nullable List<T> list) {
 		if (list == null || list.size() != 1) {
 			return null;
 		}
 		return list.get(0);
+	}
+
+	@Nullable
+	public static <T> T getOne(@Nullable Collection<T> collection) {
+		if (collection == null || collection.size() != 1) {
+			return null;
+		}
+		return collection.iterator().next();
 	}
 
 	@Nullable
@@ -372,5 +487,27 @@ public class Utils {
 
 	public static <T> boolean notEmpty(T[] arr) {
 		return arr != null && arr.length != 0;
+	}
+
+	public static void checkThreadInterrupt() {
+		if (Thread.currentThread().isInterrupted()) {
+			throw new JadxRuntimeException("Thread interrupted");
+		}
+	}
+
+	public static boolean getEnvVarBool(String varName, boolean defValue) {
+		String strValue = System.getenv(varName);
+		if (strValue == null) {
+			return defValue;
+		}
+		return strValue.equalsIgnoreCase("true");
+	}
+
+	public static int getEnvVarInt(String varName, int defValue) {
+		String strValue = System.getenv(varName);
+		if (strValue == null) {
+			return defValue;
+		}
+		return Integer.parseInt(strValue);
 	}
 }

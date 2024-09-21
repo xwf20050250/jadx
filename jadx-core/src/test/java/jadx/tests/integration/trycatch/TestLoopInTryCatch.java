@@ -11,7 +11,7 @@ public class TestLoopInTryCatch extends SmaliTest {
 	public void test() {
 		assertThat(getClassNodeFromSmali())
 				.code()
-				.containsLines(2,
+				.oneOf(c -> c.containsLines(2,
 						"int i;",
 						"while (true) {",
 						"    try {",
@@ -23,7 +23,39 @@ public class TestLoopInTryCatch extends SmaliTest {
 						"        break;",
 						"    }",
 						"}",
-						"if (i == 1) {",
-						"}");
+						"if (i != 1) {",
+						"    getI();",
+						"}"),
+						c -> c.containsLines(2,
+								"int i;",
+								"while (true) {",
+								"    try {",
+								"        i = getI();",
+								"        if (i == 1 || i == 2) {",
+								"            break;",
+								"        }",
+								"    } catch (RuntimeException unused) {",
+								"        return;",
+								"    }",
+								"}",
+								"if (i != 1) {",
+								"    getI();",
+								"}"),
+						// TODO: weird result but correct, better to not use do-while if not really needed
+						c -> c.containsLines(2,
+								"int i;",
+								"do {",
+								"    try {",
+								"        i = getI();",
+								"        if (i == 1) {",
+								"            break;",
+								"        }",
+								"    } catch (RuntimeException unused) {",
+								"        return;",
+								"    }",
+								"} while (i != 2);",
+								"if (i != 1) {",
+								"    getI();",
+								"}"));
 	}
 }

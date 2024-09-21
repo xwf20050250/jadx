@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import jadx.core.dex.attributes.AFlag;
-import jadx.core.dex.attributes.AType;
 import jadx.core.dex.info.MethodInfo;
 import jadx.core.dex.instructions.BaseInvokeNode;
 import jadx.core.dex.instructions.ConstStringNode;
@@ -17,14 +16,17 @@ import jadx.core.dex.instructions.args.LiteralArg;
 import jadx.core.dex.instructions.args.PrimitiveType;
 import jadx.core.dex.instructions.args.RegisterArg;
 import jadx.core.dex.instructions.args.SSAVar;
+import jadx.core.dex.instructions.mods.ConstructorInsn;
 import jadx.core.dex.nodes.BlockNode;
-import jadx.core.dex.nodes.FieldNode;
+import jadx.core.dex.nodes.IFieldInfoRef;
 import jadx.core.dex.nodes.InsnNode;
 import jadx.core.dex.nodes.MethodNode;
+import jadx.core.dex.visitors.finaly.MarkFinallyVisitor;
 import jadx.core.dex.visitors.ssa.SSATransform;
 import jadx.core.dex.visitors.typeinference.TypeInferenceVisitor;
 import jadx.core.utils.InsnRemover;
 import jadx.core.utils.exceptions.JadxException;
+import jadx.core.utils.exceptions.JadxRuntimeException;
 
 @JadxVisitor(
 		name = "Constants Inline",
@@ -62,47 +64,55 @@ public class ConstInlineVisitor extends AbstractVisitor {
 				|| insn.getResult() == null) {
 			return;
 		}
-
 		SSAVar sVar = insn.getResult().getSVar();
 		InsnArg constArg;
-
-		InsnType insnType = insn.getType();
-		if (insnType == InsnType.CONST || insnType == InsnType.MOVE) {
-			constArg = insn.getArg(0);
-			if (!constArg.isLiteral()) {
+		Runnable onSuccess = null;
+		switch (insn.getType()) {
+			case CONST:
+			case MOVE: {
+				constArg = insn.getArg(0);
+				if (!constArg.isLiteral()) {
+					return;
+				}
+				if (constArg.isZeroLiteral() && forbidNullInlines(sVar)) {
+					// all usages forbids inlining
+					return;
+				}
+				break;
+			}
+			case CONST_STR: {
+				String s = ((ConstStringNode) insn).getString();
+				IFieldInfoRef f = mth.getParentClass().getConstField(s);
+				if (f == null) {
+					InsnNode copy = insn.copyWithoutResult();
+					constArg = InsnArg.wrapArg(copy);
+				} else {
+					InsnNode constGet = new IndexInsnNode(InsnType.SGET, f.getFieldInfo(), 0);
+					constArg = InsnArg.wrapArg(constGet);
+					constArg.setType(ArgType.STRING);
+					onSuccess = () -> ModVisitor.addFieldUsage(f, mth);
+				}
+				break;
+			}
+			case CONST_CLASS: {
+				if (sVar.isUsedInPhi()) {
+					return;
+				}
+				constArg = InsnArg.wrapArg(insn.copyWithoutResult());
+				constArg.setType(ArgType.CLASS);
+				break;
+			}
+			default:
 				return;
-			}
-			long lit = ((LiteralArg) constArg).getLiteral();
-			if (lit == 0 && forbidNullInlines(sVar)) {
-				// all usages forbids inlining
-				return;
-			}
-		} else if (insnType == InsnType.CONST_STR) {
-			if (sVar.isUsedInPhi()) {
-				return;
-			}
-			String s = ((ConstStringNode) insn).getString();
-			FieldNode f = mth.getParentClass().getConstField(s);
-			if (f == null) {
-				InsnNode copy = insn.copyWithoutResult();
-				constArg = InsnArg.wrapArg(copy);
-			} else {
-				InsnNode constGet = new IndexInsnNode(InsnType.SGET, f.getFieldInfo(), 0);
-				constArg = InsnArg.wrapArg(constGet);
-				constArg.setType(ArgType.STRING);
-			}
-		} else if (insnType == InsnType.CONST_CLASS) {
-			if (sVar.isUsedInPhi()) {
-				return;
-			}
-			constArg = InsnArg.wrapArg(insn.copyWithoutResult());
-			constArg.setType(ArgType.CLASS);
-		} else {
-			return;
 		}
 
 		// all check passed, run replace
-		replaceConst(mth, insn, constArg, toRemove);
+		if (replaceConst(mth, insn, constArg)) {
+			toRemove.add(insn);
+			if (onSuccess != null) {
+				onSuccess.run();
+			}
+		}
 	}
 
 	/**
@@ -116,15 +126,23 @@ public class ConstInlineVisitor extends AbstractVisitor {
 		int k = 0;
 		for (RegisterArg useArg : useList) {
 			InsnNode insn = useArg.getParentInsn();
-			if (insn == null) {
-				continue;
-			}
-			if (!canUseNull(insn, useArg)) {
-				useArg.add(AFlag.DONT_INLINE_CONST);
+			if (insn != null && forbidNullArgInline(insn, useArg)) {
 				k++;
 			}
 		}
 		return k == useList.size();
+	}
+
+	private static boolean forbidNullArgInline(InsnNode insn, RegisterArg useArg) {
+		if (insn.getType() == InsnType.MOVE) {
+			// result is null, chain checks
+			return forbidNullInlines(insn.getResult().getSVar());
+		}
+		if (!canUseNull(insn, useArg)) {
+			useArg.add(AFlag.DONT_INLINE_CONST);
+			return true;
+		}
+		return false;
 	}
 
 	private static boolean canUseNull(InsnNode insn, RegisterArg useArg) {
@@ -148,39 +166,67 @@ public class ConstInlineVisitor extends AbstractVisitor {
 		return true;
 	}
 
-	private static void replaceConst(MethodNode mth, InsnNode constInsn, InsnArg constArg, List<InsnNode> toRemove) {
+	private static boolean replaceConst(MethodNode mth, InsnNode constInsn, InsnArg constArg) {
 		SSAVar ssaVar = constInsn.getResult().getSVar();
 		if (ssaVar.getUseCount() == 0) {
-			toRemove.add(constInsn);
-			return;
+			return true;
 		}
 		List<RegisterArg> useList = new ArrayList<>(ssaVar.getUseList());
 		int replaceCount = 0;
 		for (RegisterArg arg : useList) {
-			if (canInline(arg) && replaceArg(mth, arg, constArg, constInsn, toRemove)) {
+			if (canInline(mth, arg) && replaceArg(mth, arg, constArg, constInsn)) {
 				replaceCount++;
 			}
 		}
 		if (replaceCount == useList.size()) {
-			toRemove.add(constInsn);
+			return true;
 		}
+		// hide insn if used only in not generated insns
+		if (ssaVar.getUseList().stream().allMatch(ConstInlineVisitor::canIgnoreInsn)) {
+			constInsn.add(AFlag.DONT_GENERATE);
+		}
+		return false;
 	}
 
-	private static boolean canInline(RegisterArg arg) {
-		if (arg.contains(AFlag.DONT_INLINE_CONST)) {
+	private static boolean canIgnoreInsn(RegisterArg reg) {
+		InsnNode parentInsn = reg.getParentInsn();
+		if (parentInsn == null || parentInsn.getType() == InsnType.PHI) {
+			return false;
+		}
+		if (reg.isLinkedToOtherSsaVars()) {
+			return false;
+		}
+		return parentInsn.contains(AFlag.DONT_GENERATE);
+	}
+
+	@SuppressWarnings("RedundantIfStatement")
+	private static boolean canInline(MethodNode mth, RegisterArg arg) {
+		if (arg.contains(AFlag.DONT_INLINE_CONST) || arg.contains(AFlag.DONT_INLINE)) {
 			return false;
 		}
 		InsnNode parentInsn = arg.getParentInsn();
 		if (parentInsn == null) {
 			return false;
 		}
-		if (parentInsn.contains(AFlag.DONT_GENERATE) || parentInsn.contains(AFlag.FINALLY_INSNS)) {
+		if (parentInsn.contains(AFlag.DONT_GENERATE)) {
 			return false;
+		}
+		if (arg.isLinkedToOtherSsaVars() && !arg.getSVar().isUsedInPhi()) {
+			// don't inline vars used in finally block
+			return false;
+		}
+		if (parentInsn.getType() == InsnType.CONSTRUCTOR) {
+			// don't inline into anonymous call if it can be inlined later
+			MethodNode ctrMth = mth.root().getMethodUtils().resolveMethod((ConstructorInsn) parentInsn);
+			if (ctrMth != null
+					&& (ctrMth.contains(AFlag.METHOD_CANDIDATE_FOR_INLINE) || ctrMth.contains(AFlag.ANONYMOUS_CONSTRUCTOR))) {
+				return false;
+			}
 		}
 		return true;
 	}
 
-	private static boolean replaceArg(MethodNode mth, RegisterArg arg, InsnArg constArg, InsnNode constInsn, List<InsnNode> toRemove) {
+	private static boolean replaceArg(MethodNode mth, RegisterArg arg, InsnArg constArg, InsnNode constInsn) {
 		InsnNode useInsn = arg.getParentInsn();
 		if (useInsn == null) {
 			return false;
@@ -205,7 +251,7 @@ public class ConstInlineVisitor extends AbstractVisitor {
 				return false;
 			}
 			// arg replaced, made some optimizations
-			FieldNode fieldNode = null;
+			IFieldInfoRef fieldNode = null;
 			ArgType litArgType = litArg.getType();
 			if (litArgType.isTypeKnown()) {
 				fieldNode = mth.getParentClass().getConstFieldByLiteralArg(litArg);
@@ -213,41 +259,49 @@ public class ConstInlineVisitor extends AbstractVisitor {
 				fieldNode = mth.getParentClass().getConstField((int) literal, false);
 			}
 			if (fieldNode != null) {
-				litArg.wrapInstruction(mth, new IndexInsnNode(InsnType.SGET, fieldNode.getFieldInfo(), 0));
-			} else {
-				if (needExplicitCast(useInsn, litArg)) {
-					litArg.add(AFlag.EXPLICIT_PRIMITIVE_TYPE);
+				IndexInsnNode sgetInsn = new IndexInsnNode(InsnType.SGET, fieldNode.getFieldInfo(), 0);
+				if (litArg.wrapInstruction(mth, sgetInsn) != null) {
+					ModVisitor.addFieldUsage(fieldNode, mth);
 				}
+			} else {
+				addExplicitCast(useInsn, litArg);
 			}
 		} else {
 			if (!useInsn.replaceArg(arg, constArg.duplicate())) {
 				return false;
 			}
 		}
-		if (insnType == InsnType.RETURN) {
-			useInsn.setSourceLine(constInsn.getSourceLine());
-			if (useInsn.contains(AFlag.SYNTHETIC)) {
-				useInsn.setOffset(constInsn.getOffset());
-				useInsn.rewriteAttributeFrom(constInsn, AType.CODE_COMMENTS);
-			} else {
-				useInsn.copyAttributeFrom(constInsn, AType.CODE_COMMENTS);
-			}
-		}
+		useInsn.inheritMetadata(constInsn);
 		return true;
 	}
 
-	private static boolean needExplicitCast(InsnNode insn, LiteralArg arg) {
+	private static void addExplicitCast(InsnNode insn, LiteralArg arg) {
 		if (insn instanceof BaseInvokeNode) {
 			BaseInvokeNode callInsn = (BaseInvokeNode) insn;
 			MethodInfo callMth = callInsn.getCallMth();
-			int offset = callInsn.getFirstArgOffset();
-			int argIndex = insn.getArgIndex(arg);
-			ArgType argType = callMth.getArgumentsTypes().get(argIndex - offset);
-			if (argType.isPrimitive()) {
-				arg.setType(argType);
-				return argType.equals(ArgType.BYTE);
+			if (callInsn.getInstanceArg() == arg) {
+				// instance arg is null, force cast
+				if (!arg.isZeroLiteral()) {
+					throw new JadxRuntimeException("Unexpected instance arg in invoke");
+				}
+				ArgType castType = callMth.getDeclClass().getType();
+				InsnNode castInsn = new IndexInsnNode(InsnType.CAST, castType, 1);
+				castInsn.addArg(arg);
+				castInsn.add(AFlag.EXPLICIT_CAST);
+				InsnArg wrapCast = InsnArg.wrapArg(castInsn);
+				wrapCast.setType(castType);
+				insn.replaceArg(arg, wrapCast);
+			} else {
+				int offset = callInsn.getFirstArgOffset();
+				int argIndex = insn.getArgIndex(arg);
+				ArgType argType = callMth.getArgumentsTypes().get(argIndex - offset);
+				if (argType.isPrimitive()) {
+					arg.setType(argType);
+					if (argType.equals(ArgType.BYTE)) {
+						arg.add(AFlag.EXPLICIT_PRIMITIVE_TYPE);
+					}
+				}
 			}
 		}
-		return false;
 	}
 }

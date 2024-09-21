@@ -1,6 +1,7 @@
 package jadx.gui.ui.codearea;
 
-import java.awt.*;
+import java.awt.Color;
+import java.awt.Font;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
@@ -9,40 +10,62 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import javax.swing.*;
+import javax.swing.AbstractAction;
+import javax.swing.Icon;
+import javax.swing.JCheckBoxMenuItem;
+import javax.swing.KeyStroke;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.EditorKit;
 import javax.swing.text.JTextComponent;
 
-import org.fife.ui.rsyntaxtextarea.*;
-import org.fife.ui.rtextarea.*;
+import org.fife.ui.rsyntaxtextarea.FoldingAwareIconRowHeader;
+import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
+import org.fife.ui.rsyntaxtextarea.RSyntaxTextAreaEditorKit;
+import org.fife.ui.rsyntaxtextarea.RSyntaxTextAreaUI;
+import org.fife.ui.rsyntaxtextarea.RSyntaxUtilities;
+import org.fife.ui.rsyntaxtextarea.Style;
+import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
+import org.fife.ui.rsyntaxtextarea.SyntaxScheme;
+import org.fife.ui.rsyntaxtextarea.Theme;
+import org.fife.ui.rtextarea.Gutter;
+import org.fife.ui.rtextarea.GutterIconInfo;
+import org.fife.ui.rtextarea.IconRowHeader;
+import org.fife.ui.rtextarea.RTextArea;
+import org.fife.ui.rtextarea.RTextAreaUI;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import jadx.api.ICodeInfo;
 import jadx.gui.device.debugger.BreakpointManager;
 import jadx.gui.device.debugger.DbgUtils;
 import jadx.gui.settings.JadxSettings;
 import jadx.gui.treemodel.JClass;
 import jadx.gui.treemodel.JNode;
 import jadx.gui.treemodel.TextNode;
-import jadx.gui.ui.ContentPanel;
+import jadx.gui.ui.panel.ContentPanel;
 import jadx.gui.utils.NLS;
 import jadx.gui.utils.UiUtils;
 
 public final class SmaliArea extends AbstractCodeArea {
+	private static final Logger LOG = LoggerFactory.getLogger(SmaliArea.class);
+
 	private static final long serialVersionUID = 1334485631870306494L;
 
-	private static final Icon ICON_BREAKPOINT = UiUtils.openIcon("breakpoint");
-	private static final Icon ICON_BREAKPOINT_DISABLED = UiUtils.openIcon("breakpoint_disabled");
-	private static final Color BREAKPOINT_LINE_COLOR = Color.decode("#FF986E");
-	private static final Color DEBUG_LINE_COLOR = Color.decode("#80B4FF");
+	private static final Icon ICON_BREAKPOINT = UiUtils.openSvgIcon("debugger/db_set_breakpoint");
+	private static final Icon ICON_BREAKPOINT_DISABLED = UiUtils.openSvgIcon("debugger/db_disabled_breakpoint");
+	private static final Color BREAKPOINT_LINE_COLOR = Color.decode("#ad103c");
+	private static final Color DEBUG_LINE_COLOR = Color.decode("#9c1138");
 
 	private final JNode textNode;
 	private final JCheckBoxMenuItem cbUseSmaliV2;
 	private boolean curVersion = false;
 	private SmaliModel model;
 
-	SmaliArea(ContentPanel contentPanel) {
-		super(contentPanel);
+	SmaliArea(ContentPanel contentPanel, JClass node) {
+		super(contentPanel, node);
 		this.textNode = new TextNode(node.getName());
+
+		setCodeFoldingEnabled(true);
 
 		cbUseSmaliV2 = new JCheckBoxMenuItem(NLS.str("popup.bytecode_col"),
 				shouldUseSmaliPrinterV2());
@@ -51,9 +74,9 @@ public final class SmaliArea extends AbstractCodeArea {
 
 			@Override
 			public void actionPerformed(ActionEvent e) {
-				JadxSettings settings = getContentPanel().getTabbedPane().getMainWindow().getSettings();
+				JadxSettings settings = getContentPanel().getMainWindow().getSettings();
 				settings.setSmaliAreaShowBytecode(!settings.getSmaliAreaShowBytecode());
-				contentPanel.getTabbedPane().getOpenTabs().values().forEach(v -> {
+				contentPanel.getTabbedPane().getTabs().forEach(v -> {
 					if (v instanceof ClassCodeContentPanel) {
 						switchModel();
 						((ClassCodeContentPanel) v).getSmaliCodeArea().refresh();
@@ -72,7 +95,13 @@ public final class SmaliArea extends AbstractCodeArea {
 			curVersion = shouldUseSmaliPrinterV2();
 			model.load();
 			setCaretPosition(0);
+			setLoaded();
 		}
+	}
+
+	@Override
+	public ICodeInfo getCodeInfo() {
+		return ICodeInfo.EMPTY;
 	}
 
 	@Override
@@ -86,6 +115,10 @@ public final class SmaliArea extends AbstractCodeArea {
 		return textNode;
 	}
 
+	public JClass getJClass() {
+		return ((JClass) node);
+	}
+
 	private void switchModel() {
 		if (model != null) {
 			model.unload();
@@ -94,7 +127,7 @@ public final class SmaliArea extends AbstractCodeArea {
 	}
 
 	public void scrollToDebugPos(int pos) {
-		getContentPanel().getTabbedPane().getMainWindow()
+		getContentPanel().getMainWindow()
 				.getSettings().setSmaliAreaShowBytecode(true); // don't sync when it's set programmatically.
 		cbUseSmaliV2.setState(shouldUseSmaliPrinterV2());
 		if (!(model instanceof DebugModel)) {
@@ -106,7 +139,7 @@ public final class SmaliArea extends AbstractCodeArea {
 
 	@Override
 	public Font getFont() {
-		if (model == null) {
+		if (model == null || isDisposed()) {
 			return super.getFont();
 		}
 		return model.getFont();
@@ -114,11 +147,11 @@ public final class SmaliArea extends AbstractCodeArea {
 
 	@Override
 	public Font getFontForTokenType(int type) {
-		return model.getFont();
+		return getFont();
 	}
 
 	private boolean shouldUseSmaliPrinterV2() {
-		return getContentPanel().getTabbedPane().getMainWindow().getSettings().getSmaliAreaShowBytecode();
+		return getContentPanel().getMainWindow().getSettings().getSmaliAreaShowBytecode();
 	}
 
 	private abstract class SmaliModel {
@@ -144,14 +177,14 @@ public final class SmaliArea extends AbstractCodeArea {
 	private class NormalModel extends SmaliModel {
 
 		public NormalModel() {
-			Theme theme = getContentPanel().getTabbedPane().getMainWindow().getEditorTheme();
+			Theme theme = getContentPanel().getMainWindow().getEditorTheme();
 			setSyntaxScheme(theme.scheme);
-			setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_JAVA);
+			setSyntaxEditingStyle(SYNTAX_STYLE_SMALI);
 		}
 
 		@Override
 		public void load() {
-			setText(node.getSmali());
+			setText(getJClass().getSmali());
 		}
 
 		@Override
@@ -244,8 +277,8 @@ public final class SmaliArea extends AbstractCodeArea {
 			int line;
 			try {
 				line = getLineOfOffset(pos);
-			} catch (BadLocationException badLocationException) {
-				badLocationException.printStackTrace();
+			} catch (BadLocationException e) {
+				LOG.error("Failed to get line by offset: {}", pos, e);
 				return;
 			}
 			BreakpointLine bpLine = bpMap.remove(line);
@@ -271,7 +304,7 @@ public final class SmaliArea extends AbstractCodeArea {
 				int line = getLineOfOffset(pos);
 				runningHighlightTag = addLineHighlight(line, DEBUG_LINE_COLOR);
 			} catch (BadLocationException e) {
-				e.printStackTrace();
+				LOG.error("Failed to get line by offset: {}", pos, e);
 			}
 		}
 
@@ -280,7 +313,7 @@ public final class SmaliArea extends AbstractCodeArea {
 				int line = getLineOfOffset(pos);
 				bpMap.computeIfAbsent(line, k -> new BreakpointLine(line)).setDisabled(true);
 			} catch (BadLocationException e) {
-				e.printStackTrace();
+				LOG.error("Failed to get line by offset: {}", pos, e);
 			}
 		}
 
@@ -290,16 +323,16 @@ public final class SmaliArea extends AbstractCodeArea {
 
 			public SmaliV2Style(SmaliArea smaliArea) {
 				super(true);
-				curTheme = smaliArea.getContentPanel().getTabbedPane().getMainWindow().getEditorTheme();
+				curTheme = smaliArea.getContentPanel().getMainWindow().getEditorTheme();
 				updateTheme();
 			}
 
 			public Font getFont() {
-				return getContentPanel().getTabbedPane().getMainWindow().getSettings().getSmaliFont();
+				return getContentPanel().getMainWindow().getSettings().getSmaliFont();
 			}
 
 			public boolean refreshTheme() {
-				Theme theme = getContentPanel().getTabbedPane().getMainWindow().getEditorTheme();
+				Theme theme = getContentPanel().getMainWindow().getEditorTheme();
 				boolean refresh = theme != curTheme;
 				if (refresh) {
 					curTheme = theme;
@@ -361,7 +394,7 @@ public final class SmaliArea extends AbstractCodeArea {
 						try {
 							iconInfo = gutter.addLineTrackingIcon(line, ICON_BREAKPOINT_DISABLED);
 						} catch (BadLocationException e) {
-							e.printStackTrace();
+							LOG.error("Failed to add line tracking icon", e);
 						}
 					}
 				} else {
@@ -371,7 +404,7 @@ public final class SmaliArea extends AbstractCodeArea {
 							iconInfo = gutter.addLineTrackingIcon(line, ICON_BREAKPOINT);
 							highlightTag = addLineHighlight(line, BREAKPOINT_LINE_COLOR);
 						} catch (BadLocationException e) {
-							e.printStackTrace();
+							LOG.error("Failed to remove line tracking icon", e);
 						}
 					}
 				}

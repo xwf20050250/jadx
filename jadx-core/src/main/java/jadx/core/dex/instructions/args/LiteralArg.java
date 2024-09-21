@@ -1,5 +1,7 @@
 package jadx.core.dex.instructions.args;
 
+import org.jetbrains.annotations.Nullable;
+
 import jadx.core.codegen.TypeGen;
 import jadx.core.utils.StringUtils;
 import jadx.core.utils.exceptions.JadxRuntimeException;
@@ -56,13 +58,54 @@ public final class LiteralArg extends InsnArg {
 		return true;
 	}
 
+	@Override
+	public boolean isZeroLiteral() {
+		return literal == 0;
+	}
+
 	public boolean isInteger() {
-		PrimitiveType type = this.type.getPrimitiveType();
-		return type == PrimitiveType.INT
-				|| type == PrimitiveType.BYTE
-				|| type == PrimitiveType.CHAR
-				|| type == PrimitiveType.SHORT
-				|| type == PrimitiveType.LONG;
+		switch (type.getPrimitiveType()) {
+			case INT:
+			case BYTE:
+			case CHAR:
+			case SHORT:
+			case LONG:
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	public boolean isNegative() {
+		if (isInteger()) {
+			return literal < 0;
+		}
+		if (type == ArgType.FLOAT) {
+			float val = Float.intBitsToFloat(((int) literal));
+			return val < 0 && Float.isFinite(val);
+		}
+		if (type == ArgType.DOUBLE) {
+			double val = Double.longBitsToDouble(literal);
+			return val < 0 && Double.isFinite(val);
+		}
+		return false;
+	}
+
+	@Nullable
+	public LiteralArg negate() {
+		long neg;
+		if (isInteger()) {
+			neg = -literal;
+		} else if (type == ArgType.FLOAT) {
+			float val = Float.intBitsToFloat(((int) literal));
+			neg = Float.floatToIntBits(-val);
+		} else if (type == ArgType.DOUBLE) {
+			double val = Double.longBitsToDouble(literal);
+			neg = Double.doubleToLongBits(-val);
+		} else {
+			return null;
+		}
+		return new LiteralArg(neg, type);
 	}
 
 	@Override
@@ -85,6 +128,11 @@ public final class LiteralArg extends InsnArg {
 		}
 		LiteralArg that = (LiteralArg) o;
 		return literal == that.literal && getType().equals(that.getType());
+	}
+
+	@Override
+	public String toShortString() {
+		return Long.toString(literal);
 	}
 
 	@Override

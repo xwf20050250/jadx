@@ -7,6 +7,7 @@ public enum TypeCompareEnum {
 	WIDER,
 	WIDER_BY_GENERIC, // same basic type without generic
 	CONFLICT,
+	CONFLICT_BY_GENERIC, // same basic type, conflict in generics
 	UNKNOWN;
 
 	public TypeCompareEnum invert() {
@@ -24,6 +25,7 @@ public enum TypeCompareEnum {
 				return NARROW_BY_GENERIC;
 
 			case CONFLICT:
+			case CONFLICT_BY_GENERIC:
 			case EQUAL:
 			case UNKNOWN:
 			default:
@@ -39,6 +41,10 @@ public enum TypeCompareEnum {
 		return this == WIDER || this == WIDER_BY_GENERIC;
 	}
 
+	public boolean isWiderOrEqual() {
+		return isEqual() || isWider();
+	}
+
 	public boolean isNarrow() {
 		return this == NARROW || this == NARROW_BY_GENERIC;
 	}
@@ -47,7 +53,7 @@ public enum TypeCompareEnum {
 		return isEqual() || isNarrow();
 	}
 
-	public boolean isGeneric() {
-		return this == WIDER_BY_GENERIC || this == NARROW_BY_GENERIC;
+	public boolean isConflict() {
+		return this == CONFLICT || this == CONFLICT_BY_GENERIC;
 	}
 }

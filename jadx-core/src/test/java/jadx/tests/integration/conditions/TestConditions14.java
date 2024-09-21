@@ -2,14 +2,12 @@ package jadx.tests.integration.conditions;
 
 import org.junit.jupiter.api.Test;
 
-import jadx.core.dex.nodes.ClassNode;
 import jadx.tests.api.IntegrationTest;
-
-import static jadx.tests.api.utils.JadxMatchers.containsOne;
-import static org.hamcrest.MatcherAssert.assertThat;
+import jadx.tests.api.utils.assertj.JadxAssertions;
 
 public class TestConditions14 extends IntegrationTest {
 
+	@SuppressWarnings({ "EqualsReplaceableByObjectsCall", "ConstantConditions" })
 	public static class TestCls {
 
 		public static boolean test(Object a, Object b) {
@@ -24,11 +22,10 @@ public class TestConditions14 extends IntegrationTest {
 
 	@Test
 	public void test() {
-		ClassNode cls = getClassNode(TestCls.class);
-		String code = cls.getCode().toString();
-
-		assertThat(code, containsOne("boolean r = a == null ? b != null : !a.equals(b);"));
-		assertThat(code, containsOne("if (r) {"));
-		assertThat(code, containsOne("System.out.println(\"r=\" + r);"));
+		JadxAssertions.assertThat(getClassNode(TestCls.class))
+				.code()
+				.containsOne("boolean r = a == null ? b != null : !a.equals(b);")
+				.containsOne("if (r) {")
+				.containsOne("System.out.println(\"r=\" + r);");
 	}
 }

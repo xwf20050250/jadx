@@ -4,6 +4,7 @@ import java.awt.Point;
 import java.awt.event.InputEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.util.Objects;
 
 import javax.swing.JPopupMenu;
 import javax.swing.event.PopupMenuEvent;
@@ -15,20 +16,24 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import jadx.api.CodePosition;
-import jadx.api.JadxDecompiler;
+import jadx.api.ICodeInfo;
+import jadx.api.JavaClass;
 import jadx.api.JavaNode;
-import jadx.gui.jobs.IndexJob;
+import jadx.api.metadata.ICodeAnnotation;
+import jadx.gui.JadxWrapper;
 import jadx.gui.settings.JadxProject;
 import jadx.gui.treemodel.JClass;
 import jadx.gui.treemodel.JNode;
-import jadx.gui.ui.ContentPanel;
+import jadx.gui.treemodel.JResource;
 import jadx.gui.ui.MainWindow;
+import jadx.gui.ui.codearea.mode.JCodeMode;
+import jadx.gui.ui.panel.ContentPanel;
 import jadx.gui.utils.CaretPositionFix;
 import jadx.gui.utils.DefaultPopupMenuListener;
 import jadx.gui.utils.JNodeCache;
 import jadx.gui.utils.JumpPosition;
 import jadx.gui.utils.UiUtils;
+import jadx.gui.utils.shortcut.ShortcutsController;
 
 /**
  * The {@link AbstractCodeArea} implementation used for displaying Java code and text based
@@ -39,25 +44,33 @@ public final class CodeArea extends AbstractCodeArea {
 
 	private static final long serialVersionUID = 6312736869579635796L;
 
-	CodeArea(ContentPanel contentPanel) {
-		super(contentPanel);
-		setSyntaxEditingStyle(node.getSyntaxName());
+	private @Nullable ICodeInfo cachedCodeInfo;
+	private final ShortcutsController shortcutsController;
 
-		boolean isJavaCode = node instanceof JClass;
+	CodeArea(ContentPanel contentPanel, JNode node) {
+		super(contentPanel, node);
+		this.shortcutsController = getMainWindow().getShortcutsController();
+
+		setSyntaxEditingStyle(node.getSyntaxName());
+		boolean isJavaCode = isCodeNode();
 		if (isJavaCode) {
 			((RSyntaxDocument) getDocument()).setSyntaxStyle(new JadxTokenMaker(this));
-			addMenuItems();
+		}
+
+		if (node instanceof JResource && node.makeString().endsWith(".json")) {
+			addMenuForJsonFile();
 		}
 
 		setHyperlinksEnabled(true);
+		setCodeFoldingEnabled(true);
 		setLinkScanningMask(InputEvent.CTRL_DOWN_MASK);
 		CodeLinkGenerator codeLinkGenerator = new CodeLinkGenerator(this);
 		setLinkGenerator(codeLinkGenerator);
 		addMouseListener(new MouseAdapter() {
 			@Override
 			public void mouseClicked(MouseEvent e) {
-				if (e.getClickCount() % 2 == 0 || e.isControlDown()) {
-					navToDecl(e.getPoint(), codeLinkGenerator);
+				if (e.isControlDown() || jumpOnDoubleClick(e)) {
+					navToDecl(e.getPoint());
 				}
 			}
 		});
@@ -67,48 +80,74 @@ public final class CodeArea extends AbstractCodeArea {
 		}
 	}
 
-	@SuppressWarnings("deprecation")
-	private void navToDecl(Point point, CodeLinkGenerator codeLinkGenerator) {
-		int offs = viewToModel(point);
-		JumpPosition jump = codeLinkGenerator.getJumpLinkAtOffset(CodeArea.this, offs);
-		if (jump != null) {
-			contentPanel.getTabbedPane().codeJump(jump);
+	public boolean isCodeNode() {
+		return node instanceof JClass || node instanceof JCodeMode;
+	}
+
+	private boolean jumpOnDoubleClick(MouseEvent e) {
+		return e.getClickCount() == 2 && getMainWindow().getSettings().isJumpOnDoubleClick();
+	}
+
+	private void navToDecl(Point point) {
+		int offs = viewToModel2D(point);
+		JNode node = getJNodeAtOffset(adjustOffsetForWordToken(offs));
+		if (node != null) {
+			contentPanel.getTabsController().codeJump(node);
 		}
+	}
+
+	@Override
+	public ICodeInfo getCodeInfo() {
+		if (cachedCodeInfo == null) {
+			if (isDisposed()) {
+				LOG.debug("CodeArea used after dispose!");
+				return ICodeInfo.EMPTY;
+			}
+			cachedCodeInfo = Objects.requireNonNull(node.getCodeInfo());
+		}
+		return cachedCodeInfo;
 	}
 
 	@Override
 	public void load() {
 		if (getText().isEmpty()) {
-			setText(node.getContent());
+			setText(getCodeInfo().getCodeStr());
 			setCaretPosition(0);
+			setLoaded();
 		}
 	}
 
 	@Override
 	public void refresh() {
-		setText(node.getContent());
+		cachedCodeInfo = null;
+		setText(getCodeInfo().getCodeStr());
 	}
 
-	private void addMenuItems() {
-		FindUsageAction findUsage = new FindUsageAction(this);
-		GoToDeclarationAction goToDeclaration = new GoToDeclarationAction(this);
-		RenameAction rename = new RenameAction(this);
-		CommentAction comment = new CommentAction(this);
+	@Override
+	protected JPopupMenu createPopupMenu() {
+		JPopupMenu popup = super.createPopupMenu();
+		if (node instanceof JClass) {
+			appendCodeMenuItems(popup);
+		}
+		return popup;
+	}
 
-		JPopupMenu popup = getPopupMenu();
+	private void appendCodeMenuItems(JPopupMenu popupMenu) {
+		ShortcutsController shortcutsController = getMainWindow().getShortcutsController();
+		JNodePopupBuilder popup = new JNodePopupBuilder(this, popupMenu, shortcutsController);
 		popup.addSeparator();
-		popup.add(findUsage);
-		popup.add(goToDeclaration);
-		popup.add(comment);
+		popup.add(new FindUsageAction(this));
+		popup.add(new GoToDeclarationAction(this));
+		popup.add(new CommentAction(this));
 		popup.add(new CommentSearchAction(this));
-		popup.add(rename);
-		popup.addPopupMenuListener(findUsage);
-		popup.addPopupMenuListener(goToDeclaration);
-		popup.addPopupMenuListener(comment);
-		popup.addPopupMenuListener(rename);
+		popup.add(new RenameAction(this));
+		popup.addSeparator();
+		popup.add(new FridaAction(this));
+		popup.add(new XposedAction(this));
+		getMainWindow().getWrapper().getGuiPluginsContext().appendPopupMenus(this, popup);
 
 		// move caret on mouse right button click
-		popup.addPopupMenuListener(new DefaultPopupMenuListener() {
+		popupMenu.addPopupMenuListener(new DefaultPopupMenuListener() {
 			@Override
 			public void popupMenuWillBecomeVisible(PopupMenuEvent e) {
 				CodeArea codeArea = CodeArea.this;
@@ -122,35 +161,35 @@ public final class CodeArea extends AbstractCodeArea {
 		});
 	}
 
-	public int adjustOffsetForToken(@Nullable Token token) {
+	private void addMenuForJsonFile() {
+		ShortcutsController shortcutsController = getMainWindow().getShortcutsController();
+		JNodePopupBuilder popup = new JNodePopupBuilder(this, getPopupMenu(), shortcutsController);
+		popup.addSeparator();
+		popup.add(new JsonPrettifyAction(this));
+	}
+
+	/**
+	 * Search start of word token at specified offset
+	 *
+	 * @return -1 if no word token found
+	 */
+	public int adjustOffsetForWordToken(int offset) {
+		Token token = getWordTokenAtOffset(offset);
 		if (token == null) {
 			return -1;
 		}
 		int type = token.getType();
-		final int sourceOffset;
-		if (node instanceof JClass) {
-			if (type == TokenTypes.IDENTIFIER) {
-				sourceOffset = token.getOffset();
-			} else if (type == TokenTypes.ANNOTATION && token.length() > 1) {
-				sourceOffset = token.getOffset() + 1;
-			} else {
-				return -1;
+		if (isCodeNode()) {
+			if (type == TokenTypes.IDENTIFIER || type == TokenTypes.FUNCTION) {
+				return token.getOffset();
 			}
-		} else {
-			if (type == TokenTypes.MARKUP_TAG_ATTRIBUTE_VALUE) {
-				sourceOffset = token.getOffset() + 1; // skip quote at start (")
-			} else {
-				return -1;
+			if (type == TokenTypes.ANNOTATION && token.length() > 1) {
+				return token.getOffset() + 1;
 			}
+		} else if (type == TokenTypes.MARKUP_TAG_ATTRIBUTE_VALUE) {
+			return token.getOffset() + 1; // skip quote at start (")
 		}
-		// fast skip
-		if (token.length() == 1) {
-			char ch = token.getTextArray()[token.getTextOffset()];
-			if (ch == '.' || ch == ',' || ch == ';') {
-				return -1;
-			}
-		}
-		return sourceOffset;
+		return -1;
 	}
 
 	/**
@@ -166,12 +205,12 @@ public final class CodeArea extends AbstractCodeArea {
 		if (foundNode == null) {
 			return null;
 		}
-		CodePosition pos = getDecompiler().getDefinitionPosition(foundNode);
-		if (pos == null) {
-			return null;
+		if (foundNode == node.getJavaNode()) {
+			// current node
+			return new JumpPosition(node);
 		}
 		JNode jNode = convertJavaNode(foundNode);
-		return new JumpPosition(jNode.getRootClass(), pos.getLine(), JumpPosition.getDefPos(jNode));
+		return new JumpPosition(jNode);
 	}
 
 	private JNode convertJavaNode(JavaNode javaNode) {
@@ -179,12 +218,41 @@ public final class CodeArea extends AbstractCodeArea {
 		return nodeCache.makeFrom(javaNode);
 	}
 
+	@Nullable
 	public JNode getNodeUnderCaret() {
-		int start = getWordStart(getCaretPosition());
+		int caretPos = getCaretPosition();
+		return getJNodeAtOffset(adjustOffsetForWordToken(caretPos));
+	}
+
+	@Nullable
+	public JNode getEnclosingNodeUnderCaret() {
+		int caretPos = getCaretPosition();
+		int start = adjustOffsetForWordToken(caretPos);
 		if (start == -1) {
-			start = getCaretPosition();
+			start = caretPos;
 		}
-		return getJNodeAtOffset(start);
+		return getEnclosingJNodeAtOffset(start);
+	}
+
+	@Nullable
+	public JNode getNodeUnderMouse() {
+		Point pos = UiUtils.getMousePosition(this);
+		return getJNodeAtOffset(adjustOffsetForWordToken(viewToModel2D(pos)));
+	}
+
+	@Nullable
+	public JNode getEnclosingNodeUnderMouse() {
+		Point pos = UiUtils.getMousePosition(this);
+		return getEnclosingJNodeAtOffset(adjustOffsetForWordToken(viewToModel2D(pos)));
+	}
+
+	@Nullable
+	public JNode getEnclosingJNodeAtOffset(int offset) {
+		JavaNode javaNode = getEnclosingJavaNode(offset);
+		if (javaNode != null) {
+			return convertJavaNode(javaNode);
+		}
+		return null;
 	}
 
 	@Nullable
@@ -204,25 +272,71 @@ public final class CodeArea extends AbstractCodeArea {
 			return null;
 		}
 		try {
-			// TODO: add direct mapping for code offset to CodeWriter (instead of line and line offset pair)
-			int line = this.getLineOfOffset(offset);
-			int lineOffset = offset - this.getLineStartOffset(line);
-			return node.getJavaNodeAtPosition(getDecompiler(), line + 1, lineOffset + 1);
+			return getJadxWrapper().getDecompiler().getJavaNodeAtPosition(getCodeInfo(), offset);
 		} catch (Exception e) {
 			LOG.error("Can't get java node by offset: {}", offset, e);
 		}
 		return null;
 	}
 
+	public JavaNode getClosestJavaNode(int offset) {
+		if (offset == -1) {
+			return null;
+		}
+		try {
+			return getJadxWrapper().getDecompiler().getClosestJavaNode(getCodeInfo(), offset);
+		} catch (Exception e) {
+			LOG.error("Can't get java node by offset: {}", offset, e);
+			return null;
+		}
+	}
+
+	public JavaNode getEnclosingJavaNode(int offset) {
+		if (offset == -1) {
+			return null;
+		}
+		try {
+			return getJadxWrapper().getDecompiler().getEnclosingNode(getCodeInfo(), offset);
+		} catch (Exception e) {
+			LOG.error("Can't get java node by offset: {}", offset, e);
+			return null;
+		}
+	}
+
+	public @Nullable JavaClass getJavaClassIfAtPos(int pos) {
+		try {
+			ICodeInfo codeInfo = getCodeInfo();
+			if (!codeInfo.hasMetadata()) {
+				return null;
+			}
+			ICodeAnnotation ann = codeInfo.getCodeMetadata().getAt(pos);
+			if (ann == null) {
+				return null;
+			}
+			switch (ann.getAnnType()) {
+				case CLASS:
+					return (JavaClass) getJadxWrapper().getDecompiler().getJavaNodeByCodeAnnotation(codeInfo, ann);
+				case METHOD:
+					// use class from constructor call
+					JavaNode node = getJadxWrapper().getDecompiler().getJavaNodeByCodeAnnotation(codeInfo, ann);
+					return node != null ? node.getDeclaringClass() : null;
+				default:
+					return null;
+			}
+		} catch (Exception e) {
+			LOG.error("Can't get java node by offset: {}", pos, e);
+			return null;
+		}
+	}
+
 	public void refreshClass() {
 		if (node instanceof JClass) {
-			JClass cls = (JClass) node;
+			JClass cls = node.getRootClass();
 			try {
 				CaretPositionFix caretFix = new CaretPositionFix(this);
 				caretFix.save();
 
-				cls.reload();
-				IndexJob.refreshIndex(getMainWindow().getCacheObject(), cls.getCls());
+				cachedCodeInfo = cls.reload(getMainWindow().getCacheObject());
 
 				ClassCodeContentPanel codeContentPanel = (ClassCodeContentPanel) this.contentPanel;
 				codeContentPanel.getTabbedPane().refresh(cls);
@@ -234,14 +348,22 @@ public final class CodeArea extends AbstractCodeArea {
 	}
 
 	public MainWindow getMainWindow() {
-		return contentPanel.getTabbedPane().getMainWindow();
+		return contentPanel.getMainWindow();
 	}
 
-	public JadxDecompiler getDecompiler() {
-		return getMainWindow().getWrapper().getDecompiler();
+	public JadxWrapper getJadxWrapper() {
+		return getMainWindow().getWrapper();
 	}
 
 	public JadxProject getProject() {
 		return getMainWindow().getProject();
+	}
+
+	@Override
+	public void dispose() {
+		shortcutsController.unbindActionsForComponent(this);
+
+		super.dispose();
+		cachedCodeInfo = null;
 	}
 }

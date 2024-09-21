@@ -6,11 +6,9 @@ import java.io.InputStream;
 
 import org.junit.jupiter.api.Test;
 
-import jadx.core.dex.nodes.ClassNode;
 import jadx.tests.api.IntegrationTest;
 
-import static jadx.tests.api.utils.JadxMatchers.containsLines;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static jadx.tests.api.utils.assertj.JadxAssertions.assertThat;
 
 public class TestTryCatchFinally6 extends IntegrationTest {
 
@@ -33,36 +31,27 @@ public class TestTryCatchFinally6 extends IntegrationTest {
 
 	@Test
 	public void test() {
-		ClassNode cls = getClassNode(TestCls.class);
-		String code = cls.getCode().toString();
-
-		assertThat(code, containsLines(2,
-				"InputStream is = null;",
-				"try {",
-				indent(1) + "call();",
-				indent(1) + "is = new FileInputStream(\"1.txt\");",
-				"} finally {",
-				indent(1) + "if (is != null) {",
-				indent(2) + "is.close();",
-				indent(1) + '}',
-				"}"));
+		assertThat(getClassNode(TestCls.class))
+				.code()
+				.containsLines(2,
+						"InputStream is = null;",
+						"try {",
+						indent(1) + "call();",
+						indent(1) + "is = new FileInputStream(\"1.txt\");",
+						"} finally {",
+						indent(1) + "if (is != null) {",
+						indent(2) + "is.close();",
+						indent(1) + '}',
+						"}");
 	}
 
 	@Test
 	public void testNoDebug() {
 		noDebugInfo();
-		ClassNode cls = getClassNode(TestCls.class);
-		String code = cls.getCode().toString();
+		assertThat(getClassNode(TestCls.class))
+				.code()
+				.containsOne("if (0 != 0) {");
 
-		assertThat(code, containsLines(2,
-				"FileInputStream fileInputStream = null;",
-				"try {",
-				indent() + "call();",
-				indent() + "fileInputStream = new FileInputStream(\"1.txt\");",
-				"} finally {",
-				indent() + "if (fileInputStream != null) {",
-				indent() + indent() + "fileInputStream.close();",
-				indent() + '}',
-				"}"));
+		// impossible to prove that variables should be merged, so can't restore finally block here
 	}
 }

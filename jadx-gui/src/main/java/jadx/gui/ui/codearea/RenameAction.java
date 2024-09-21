@@ -1,70 +1,30 @@
 package jadx.gui.ui.codearea;
 
-import java.awt.event.ActionEvent;
-
-import javax.swing.*;
-import javax.swing.event.PopupMenuEvent;
-
-import org.jetbrains.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import jadx.gui.treemodel.JNode;
-import jadx.gui.ui.RenameDialog;
-import jadx.gui.utils.NLS;
-import jadx.gui.utils.UiUtils;
+import jadx.gui.treemodel.JRenameNode;
+import jadx.gui.ui.action.ActionModel;
+import jadx.gui.ui.dialog.RenameDialog;
 
-import static java.awt.event.KeyEvent.VK_N;
-import static javax.swing.KeyStroke.getKeyStroke;
-
-public final class RenameAction extends JNodeMenuAction<JNode> {
+public final class RenameAction extends JNodeAction {
 	private static final long serialVersionUID = -4680872086148463289L;
 
-	private static final Logger LOG = LoggerFactory.getLogger(RenameAction.class);
-
 	public RenameAction(CodeArea codeArea) {
-		super(NLS.str("popup.rename") + " (n)", codeArea);
-		KeyStroke key = getKeyStroke(VK_N, 0);
-		codeArea.getInputMap().put(key, "trigger rename");
-		codeArea.getActionMap().put("trigger rename", new AbstractAction() {
-			@Override
-			public void actionPerformed(ActionEvent e) {
-				node = codeArea.getNodeUnderCaret();
-				showRenameDialog();
-			}
-		});
+		super(ActionModel.CODE_RENAME, codeArea);
 	}
 
-	private void showRenameDialog() {
+	@Override
+	public boolean isActionEnabled(JNode node) {
 		if (node == null) {
-			LOG.info("node == null!");
-			UiUtils.showMessageBox(codeArea.getMainWindow(), NLS.str("msg.rename_node_disabled"));
-			return;
+			return false;
 		}
-		if (!node.canRename()) {
-			UiUtils.showMessageBox(codeArea.getMainWindow(),
-					NLS.str("msg.rename_node_failed", node.getJavaNode().getFullName()));
-			LOG.info("node can't be renamed");
-			return;
+		if (node instanceof JRenameNode) {
+			return ((JRenameNode) node).canRename();
 		}
-		RenameDialog.rename(codeArea.getMainWindow(), node);
-		node = null;
+		return false;
 	}
 
 	@Override
-	public void popupMenuWillBecomeVisible(PopupMenuEvent e) {
-		super.popupMenuWillBecomeVisible(e);
-		setEnabled(node != null && node.canRename());
-	}
-
-	@Override
-	public void actionPerformed(ActionEvent e) {
-		showRenameDialog();
-	}
-
-	@Nullable
-	@Override
-	public JNode getNodeByOffset(int offset) {
-		return codeArea.getJNodeAtOffset(offset);
+	public void runAction(JNode node) {
+		RenameDialog.rename(getCodeArea().getMainWindow(), (JRenameNode) node);
 	}
 }

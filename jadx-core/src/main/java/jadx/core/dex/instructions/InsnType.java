@@ -11,6 +11,7 @@ public enum InsnType {
 	NOT,
 
 	MOVE,
+	MOVE_MULTI,
 	CAST,
 
 	RETURN,
@@ -70,5 +71,9 @@ public enum InsnType {
 	PHI,
 
 	// fake insn to keep arguments which will be used in regions codegen
-	REGION_ARG
+	REGION_ARG,
+
+	// Java specific dynamic jump instructions
+	JAVA_JSR,
+	JAVA_RET,
 }

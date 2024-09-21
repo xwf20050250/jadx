@@ -1,28 +1,36 @@
 package jadx.gui.treemodel;
 
+import java.util.Comparator;
+import java.util.List;
+import java.util.Set;
+
 import javax.swing.Icon;
 import javax.swing.ImageIcon;
+import javax.swing.JPopupMenu;
 
 import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
+import org.jetbrains.annotations.NotNull;
 
 import jadx.api.JavaField;
 import jadx.api.JavaNode;
+import jadx.api.data.ICodeRename;
+import jadx.api.data.impl.JadxCodeRename;
+import jadx.api.data.impl.JadxNodeRef;
+import jadx.api.metadata.ICodeNodeRef;
+import jadx.core.deobf.NameMapper;
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.info.AccessInfo;
-import jadx.gui.utils.OverlayIcon;
+import jadx.gui.ui.MainWindow;
+import jadx.gui.ui.dialog.RenameDialog;
+import jadx.gui.utils.Icons;
 import jadx.gui.utils.UiUtils;
 
-public class JField extends JNode {
+public class JField extends JNode implements JRenameNode {
 	private static final long serialVersionUID = 1712572192106793359L;
 
-	private static final ImageIcon ICON_FLD_DEF = UiUtils.openIcon("field_default_obj");
-	private static final ImageIcon ICON_FLD_PRI = UiUtils.openIcon("field_private_obj");
-	private static final ImageIcon ICON_FLD_PRO = UiUtils.openIcon("field_protected_obj");
-	private static final ImageIcon ICON_FLD_PUB = UiUtils.openIcon("field_public_obj");
-
-	private static final ImageIcon ICON_TRANSIENT = UiUtils.openIcon("transient_co");
-	private static final ImageIcon ICON_VOLATILE = UiUtils.openIcon("volatile_co");
-
+	private static final ImageIcon ICON_FLD_PRI = UiUtils.openSvgIcon("nodes/privateField");
+	private static final ImageIcon ICON_FLD_PRO = UiUtils.openSvgIcon("nodes/protectedField");
+	private static final ImageIcon ICON_FLD_PUB = UiUtils.openSvgIcon("nodes/publicField");
 	private final transient JavaField field;
 	private final transient JClass jParent;
 
@@ -41,6 +49,11 @@ public class JField extends JNode {
 	}
 
 	@Override
+	public ICodeNodeRef getCodeNodeRef() {
+		return field.getFieldNode();
+	}
+
+	@Override
 	public JClass getJParent() {
 		return jParent;
 	}
@@ -56,21 +69,45 @@ public class JField extends JNode {
 	}
 
 	@Override
-	public int getLine() {
-		return field.getDecompiledLine();
+	public JPopupMenu onTreePopupMenu(MainWindow mainWindow) {
+		return RenameDialog.buildRenamePopup(mainWindow, this);
+	}
+
+	@Override
+	public String getTitle() {
+		return makeLongStringHtml();
+	}
+
+	@Override
+	public ICodeRename buildCodeRename(String newName, Set<ICodeRename> renames) {
+		return new JadxCodeRename(JadxNodeRef.forFld(field), newName);
+	}
+
+	@Override
+	public boolean isValidName(String newName) {
+		return NameMapper.isValidIdentifier(newName);
+	}
+
+	@Override
+	public void removeAlias() {
+		field.removeAlias();
+	}
+
+	@Override
+	public void addUpdateNodes(List<JavaNode> toUpdate) {
+		toUpdate.add(field);
+		toUpdate.addAll(field.getUseIn());
+	}
+
+	@Override
+	public void reload(MainWindow mainWindow) {
+		mainWindow.reloadTree();
 	}
 
 	@Override
 	public Icon getIcon() {
 		AccessInfo af = field.getAccessFlags();
-		OverlayIcon icon = UiUtils.makeIcon(af, ICON_FLD_PUB, ICON_FLD_PRI, ICON_FLD_PRO, ICON_FLD_DEF);
-		if (af.isTransient()) {
-			icon.add(ICON_TRANSIENT);
-		}
-		if (af.isVolatile()) {
-			icon.add(ICON_VOLATILE);
-		}
-		return icon;
+		return UiUtils.makeIcon(af, ICON_FLD_PUB, ICON_FLD_PRI, ICON_FLD_PRO, Icons.FIELD);
 	}
 
 	@Override
@@ -99,13 +136,24 @@ public class JField extends JNode {
 	}
 
 	@Override
+	public String getTooltip() {
+		String fullType = UiUtils.escapeHtml(field.getType().toString());
+		return UiUtils.wrapHtml(fullType + ' ' + UiUtils.escapeHtml(field.getName()));
+	}
+
+	@Override
 	public String makeDescString() {
 		return UiUtils.typeStr(field.getType()) + " " + field.getName();
 	}
 
 	@Override
+	public boolean disableHtml() {
+		return false;
+	}
+
+	@Override
 	public boolean hasDescString() {
-		return true;
+		return false;
 	}
 
 	@Override
@@ -116,5 +164,22 @@ public class JField extends JNode {
 	@Override
 	public boolean equals(Object o) {
 		return this == o || o instanceof JField && field.equals(((JField) o).field);
+	}
+
+	private static final Comparator<JField> COMPARATOR = Comparator
+			.comparing(JField::getJParent)
+			.thenComparing(JNode::getName)
+			.thenComparingInt(JField::getPos);
+
+	public int compareToFld(@NotNull JField other) {
+		return COMPARATOR.compare(this, other);
+	}
+
+	@Override
+	public int compareTo(@NotNull JNode other) {
+		if (other instanceof JField) {
+			return compareToFld(((JField) other));
+		}
+		return super.compareTo(other);
 	}
 }

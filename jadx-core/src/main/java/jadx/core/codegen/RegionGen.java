@@ -5,33 +5,38 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import jadx.api.CommentsLevel;
 import jadx.api.ICodeWriter;
-import jadx.api.data.ICodeComment;
-import jadx.api.data.annotations.CustomOffsetRef;
-import jadx.api.data.annotations.InsnCodeOffset;
+import jadx.api.metadata.annotations.InsnCodeOffset;
+import jadx.api.metadata.annotations.VarNode;
+import jadx.api.plugins.input.data.AccessFlags;
+import jadx.api.plugins.input.data.annotations.EncodedValue;
+import jadx.api.plugins.input.data.attributes.JadxAttrType;
+import jadx.core.clsp.ClspClass;
+import jadx.core.codegen.utils.CodeGenUtils;
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
-import jadx.core.dex.attributes.fldinit.FieldInitAttr;
 import jadx.core.dex.attributes.nodes.DeclareVariablesAttr;
 import jadx.core.dex.attributes.nodes.ForceReturnAttr;
 import jadx.core.dex.attributes.nodes.LoopLabelAttr;
 import jadx.core.dex.info.ClassInfo;
+import jadx.core.dex.info.FieldInfo;
 import jadx.core.dex.instructions.SwitchInsn;
 import jadx.core.dex.instructions.args.ArgType;
 import jadx.core.dex.instructions.args.CodeVar;
 import jadx.core.dex.instructions.args.InsnArg;
 import jadx.core.dex.instructions.args.NamedArg;
 import jadx.core.dex.instructions.args.RegisterArg;
+import jadx.core.dex.instructions.args.SSAVar;
 import jadx.core.dex.nodes.BlockNode;
 import jadx.core.dex.nodes.FieldNode;
 import jadx.core.dex.nodes.IBlock;
 import jadx.core.dex.nodes.IContainer;
 import jadx.core.dex.nodes.InsnNode;
-import jadx.core.dex.nodes.VariableNode;
-import jadx.core.dex.regions.Region;
 import jadx.core.dex.regions.SwitchRegion;
 import jadx.core.dex.regions.SwitchRegion.CaseInfo;
 import jadx.core.dex.regions.SynchronizedRegion;
@@ -44,13 +49,10 @@ import jadx.core.dex.regions.loops.LoopRegion;
 import jadx.core.dex.regions.loops.LoopType;
 import jadx.core.dex.trycatch.ExceptionHandler;
 import jadx.core.utils.BlockUtils;
-import jadx.core.utils.CodeGenUtils;
 import jadx.core.utils.RegionUtils;
 import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.CodegenException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
-
-import static jadx.core.dex.nodes.VariableNode.VarKind;
 
 public class RegionGen extends InsnGen {
 	private static final Logger LOG = LoggerFactory.getLogger(RegionGen.class);
@@ -71,21 +73,9 @@ public class RegionGen extends InsnGen {
 				code.startLine();
 				declareVar(code, v);
 				code.add(';');
-				attachVariableCommentsData(code, v);
+				CodeGenUtils.addCodeComments(code, mth, v.getAnySsaVar().getAssign());
 			}
 		}
-	}
-
-	private void attachVariableCommentsData(ICodeWriter code, CodeVar v) {
-		RegisterArg assignReg = v.getSsaVars().get(0).getAssign();
-		if (code.isMetadataSupported()) {
-			InsnNode parentInsn = assignReg.getParentInsn();
-			if (parentInsn != null) {
-				int offset = parentInsn.getOffset();
-				code.attachLineAnnotation(new CustomOffsetRef(offset, ICodeComment.AttachType.VAR_DECLARE));
-			}
-		}
-		CodeGenUtils.addCodeComments(code, assignReg);
 	}
 
 	private void makeRegionIndent(ICodeWriter code, IContainer region) throws CodegenException {
@@ -130,7 +120,7 @@ public class RegionGen extends InsnGen {
 				BlockNode blockNode = conditionBlocks.get(0);
 				InsnNode lastInsn = BlockUtils.getLastInsn(blockNode);
 				InsnCodeOffset.attach(code, lastInsn);
-				CodeGenUtils.addCodeComments(code, lastInsn);
+				CodeGenUtils.addCodeComments(code, mth, lastInsn);
 			}
 		}
 		makeRegionIndent(code, region.getThenRegion());
@@ -160,26 +150,23 @@ public class RegionGen extends InsnGen {
 	 * Connect if-else-if block
 	 */
 	private boolean connectElseIf(ICodeWriter code, IContainer els) throws CodegenException {
-		if (els.contains(AFlag.ELSE_IF_CHAIN) && els instanceof Region) {
-			List<IContainer> subBlocks = ((Region) els).getSubBlocks();
-			if (subBlocks.size() == 1) {
-				IContainer elseBlock = subBlocks.get(0);
-				if (elseBlock instanceof IfRegion) {
-					declareVars(code, elseBlock);
-					makeIf((IfRegion) elseBlock, code, false);
-					return true;
-				}
+		if (els.contains(AFlag.ELSE_IF_CHAIN)) {
+			IContainer elseBlock = RegionUtils.getSingleSubBlock(els);
+			if (elseBlock instanceof IfRegion) {
+				declareVars(code, elseBlock);
+				makeIf((IfRegion) elseBlock, code, false);
+				return true;
 			}
 		}
 		return false;
 	}
 
 	public void makeLoop(LoopRegion region, ICodeWriter code) throws CodegenException {
+		code.startLineWithNum(region.getSourceLine());
 		LoopLabelAttr labelAttr = region.getInfo().getStart().get(AType.LOOP_LABEL);
 		if (labelAttr != null) {
-			code.startLine(mgen.getNameGen().getLoopLabel(labelAttr)).add(':');
+			code.add(mgen.getNameGen().getLoopLabel(labelAttr)).add(": ");
 		}
-		code.startLineWithNum(region.getConditionSourceLine());
 
 		IfCondition condition = region.getCondition();
 		if (condition == null) {
@@ -204,7 +191,7 @@ public class RegionGen extends InsnGen {
 				code.add("; ");
 				makeInsn(forLoop.getIncrInsn(), code, Flags.INLINE);
 				code.add(") {");
-				CodeGenUtils.addCodeComments(code, condInsn);
+				CodeGenUtils.addCodeComments(code, mth, condInsn);
 				makeRegionIndent(code, region.getBody());
 				code.startLine('}');
 				return;
@@ -216,7 +203,7 @@ public class RegionGen extends InsnGen {
 				code.add(" : ");
 				addArg(code, forEachLoop.getIterableArg(), false);
 				code.add(") {");
-				CodeGenUtils.addCodeComments(code, condInsn);
+				CodeGenUtils.addCodeComments(code, mth, condInsn);
 				makeRegionIndent(code, region.getBody());
 				code.startLine('}');
 				return;
@@ -225,9 +212,9 @@ public class RegionGen extends InsnGen {
 		}
 		if (region.isConditionAtEnd()) {
 			code.add("do {");
-			CodeGenUtils.addCodeComments(code, condInsn);
+			CodeGenUtils.addCodeComments(code, mth, condInsn);
 			makeRegionIndent(code, region.getBody());
-			code.startLineWithNum(region.getConditionSourceLine());
+			code.startLineWithNum(region.getSourceLine());
 			code.add("} while (");
 			conditionGen.add(code, condition);
 			code.add(");");
@@ -235,7 +222,7 @@ public class RegionGen extends InsnGen {
 			code.add("while (");
 			conditionGen.add(code, condition);
 			code.add(") {");
-			CodeGenUtils.addCodeComments(code, condInsn);
+			CodeGenUtils.addCodeComments(code, mth, condInsn);
 			makeRegionIndent(code, region.getBody());
 			code.startLine('}');
 		}
@@ -248,7 +235,7 @@ public class RegionGen extends InsnGen {
 		code.add(") {");
 
 		InsnCodeOffset.attach(code, monitorEnterInsn);
-		CodeGenUtils.addCodeComments(code, monitorEnterInsn);
+		CodeGenUtils.addCodeComments(code, mth, monitorEnterInsn);
 
 		makeRegionIndent(code, cont.getRegion());
 		code.startLine('}');
@@ -262,7 +249,7 @@ public class RegionGen extends InsnGen {
 		addArg(code, arg, false);
 		code.add(") {");
 		InsnCodeOffset.attach(code, insn);
-		CodeGenUtils.addCodeComments(code, insn);
+		CodeGenUtils.addCodeComments(code, mth, insn);
 		code.incIndent();
 
 		for (CaseInfo caseInfo : sw.getCases()) {
@@ -283,22 +270,12 @@ public class RegionGen extends InsnGen {
 		code.startLine('}');
 	}
 
-	private void addCaseKey(ICodeWriter code, InsnArg arg, Object k) {
+	private void addCaseKey(ICodeWriter code, InsnArg arg, Object k) throws CodegenException {
 		if (k instanceof FieldNode) {
-			FieldNode fn = (FieldNode) k;
-			if (fn.getParentClass().isEnum()) {
-				code.add(fn.getAlias());
-			} else {
-				staticField(code, fn.getFieldInfo());
-				// print original value, sometimes replaced with incorrect field
-				FieldInitAttr valueAttr = fn.get(AType.FIELD_INIT);
-				if (valueAttr != null && valueAttr.isConst()) {
-					Object value = valueAttr.getEncodedValue().getValue();
-					if (value != null) {
-						code.add(" /* ").add(value.toString()).add(" */");
-					}
-				}
-			}
+			FieldNode fld = (FieldNode) k;
+			useField(code, fld.getFieldInfo(), fld);
+		} else if (k instanceof FieldInfo) {
+			useField(code, (FieldInfo) k, null);
 		} else if (k instanceof Integer) {
 			code.add(TypeGen.literalToString((Integer) k, arg.getType(), mth, fallback));
 		} else {
@@ -306,12 +283,34 @@ public class RegionGen extends InsnGen {
 		}
 	}
 
+	private void useField(ICodeWriter code, FieldInfo fldInfo, @Nullable FieldNode fld) throws CodegenException {
+		boolean isEnum;
+		if (fld != null) {
+			isEnum = fld.getParentClass().isEnum();
+		} else {
+			ClspClass clsDetails = root.getClsp().getClsDetails(fldInfo.getDeclClass().getType());
+			isEnum = clsDetails != null && clsDetails.hasAccFlag(AccessFlags.ENUM);
+		}
+		if (isEnum) {
+			code.add(fldInfo.getAlias());
+			return;
+		}
+		staticField(code, fldInfo);
+		if (fld != null && mth.checkCommentsLevel(CommentsLevel.INFO)) {
+			// print original value, sometimes replaced with incorrect field
+			EncodedValue constVal = fld.get(JadxAttrType.CONSTANT_VALUE);
+			if (constVal != null && constVal.getValue() != null) {
+				code.add(" /* ").add(constVal.getValue().toString()).add(" */");
+			}
+		}
+	}
+
 	public void makeTryCatch(TryCatchRegion region, ICodeWriter code) throws CodegenException {
 		code.startLine("try {");
 
-		InsnNode insn = Utils.first(region.getTryCatchBlock().getInsns());
+		InsnNode insn = BlockUtils.getFirstInsn(Utils.first(region.getTryCatchBlock().getBlocks()));
 		InsnCodeOffset.attach(code, insn);
-		CodeGenUtils.addCodeComments(code, insn);
+		CodeGenUtils.addCodeComments(code, mth, insn);
 
 		makeRegionIndent(code, region.getTryRegion());
 		// TODO: move search of 'allHandler' to 'TryCatchRegion'
@@ -361,36 +360,20 @@ public class RegionGen extends InsnGen {
 		if (arg == null) {
 			code.add("unknown"); // throwing exception is too late at this point
 		} else if (arg instanceof RegisterArg) {
-			String name;
-			CodeVar codeVar = CodeGenUtils.getCodeVar((RegisterArg) arg);
-			if (codeVar != null) {
-				VariableNode node = mth.declareVar(codeVar, mgen.getNameGen(), VarKind.CATCH_ARG);
-				if (node != null) {
-					code.attachDefinition(node);
-					name = node.getName();
-					codeVar.setName(name);
-				} else {
-					name = mgen.getNameGen().assignArg(codeVar);
-				}
-			} else {
-				RegisterArg reg = (RegisterArg) arg;
-				name = mgen.getNameGen().assignArg(reg.getSVar().getCodeVar());
+			SSAVar ssaVar = ((RegisterArg) arg).getSVar();
+			if (code.isMetadataSupported()) {
+				code.attachDefinition(VarNode.get(mth, ssaVar));
 			}
-			code.add(name);
+			code.add(mgen.getNameGen().assignArg(ssaVar.getCodeVar()));
 		} else if (arg instanceof NamedArg) {
-			VariableNode node = mth.declareVar((NamedArg) arg, mgen.getNameGen(), VarKind.CATCH_ARG);
-			if (node != null) {
-				code.add(node.getName());
-			} else {
-				code.add(mgen.getNameGen().assignNamedArg((NamedArg) arg));
-			}
+			code.add(mgen.getNameGen().assignNamedArg((NamedArg) arg));
 		} else {
 			throw new JadxRuntimeException("Unexpected arg type in catch block: " + arg + ", class: " + arg.getClass().getSimpleName());
 		}
 		code.add(") {");
 
-		InsnCodeOffset.attach(code, handler.getHandleOffset());
-		CodeGenUtils.addCodeComments(code, handler.getHandlerBlock());
+		InsnCodeOffset.attach(code, handler.getHandlerOffset());
+		CodeGenUtils.addCodeComments(code, mth, handler.getHandlerBlock());
 
 		makeRegionIndent(code, region);
 	}

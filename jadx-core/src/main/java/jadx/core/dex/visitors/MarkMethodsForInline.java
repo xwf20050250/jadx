@@ -10,7 +10,6 @@ import jadx.core.Consts;
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.MethodInlineAttr;
-import jadx.core.dex.info.AccessInfo;
 import jadx.core.dex.info.FieldInfo;
 import jadx.core.dex.instructions.IndexInsnNode;
 import jadx.core.dex.instructions.InsnType;
@@ -18,9 +17,11 @@ import jadx.core.dex.instructions.InvokeNode;
 import jadx.core.dex.instructions.args.InsnArg;
 import jadx.core.dex.instructions.args.InsnWrapArg;
 import jadx.core.dex.instructions.args.RegisterArg;
-import jadx.core.dex.nodes.BlockNode;
 import jadx.core.dex.nodes.InsnNode;
 import jadx.core.dex.nodes.MethodNode;
+import jadx.core.dex.visitors.fixaccessmodifiers.FixAccessModifiers;
+import jadx.core.utils.BlockUtils;
+import jadx.core.utils.ListUtils;
 import jadx.core.utils.exceptions.JadxException;
 
 @JadxVisitor(
@@ -43,52 +44,90 @@ public class MarkMethodsForInline extends AbstractVisitor {
 	 */
 	@Nullable
 	public static MethodInlineAttr process(MethodNode mth) {
-		MethodInlineAttr mia = mth.get(AType.METHOD_INLINE);
-		if (mia != null) {
-			return mia;
-		}
-		if (canInline(mth)) {
-			List<BlockNode> blocks = mth.getBasicBlocks();
-			if (blocks == null) {
-				return null;
+		try {
+			MethodInlineAttr mia = mth.get(AType.METHOD_INLINE);
+			if (mia != null) {
+				return mia;
 			}
-			if (blocks.size() == 2) {
-				BlockNode returnBlock = blocks.get(1);
-				if (returnBlock.contains(AFlag.RETURN) || returnBlock.getInstructions().isEmpty()) {
-					MethodInlineAttr inlined = inlineMth(mth, blocks.get(0), returnBlock);
-					if (inlined != null) {
-						return inlined;
-					}
+			if (mth.contains(AFlag.METHOD_CANDIDATE_FOR_INLINE)) {
+				if (mth.getBasicBlocks() == null) {
+					return null;
+				}
+				MethodInlineAttr inlined = inlineMth(mth);
+				if (inlined != null) {
+					return inlined;
 				}
 			}
+		} catch (Exception e) {
+			mth.addWarnComment("Method inline analysis failed", e);
 		}
 		return MethodInlineAttr.inlineNotNeeded(mth);
 	}
 
-	public static boolean canInline(MethodNode mth) {
-		if (mth.isNoCode() || mth.contains(AFlag.DONT_GENERATE)) {
-			return false;
-		}
-		AccessInfo accessFlags = mth.getAccessFlags();
-		return accessFlags.isSynthetic() && accessFlags.isStatic();
-	}
-
 	@Nullable
-	private static MethodInlineAttr inlineMth(MethodNode mth, BlockNode firstBlock, BlockNode returnBlock) {
-		List<InsnNode> insnList = firstBlock.getInstructions();
-		if (insnList.isEmpty()) {
-			// synthetic field getter
-			BlockNode block = mth.getBasicBlocks().get(1);
-			InsnNode insn = block.getInstructions().get(0);
-			// set arg from 'return' instruction
-			return addInlineAttr(mth, InsnNode.wrapArg(insn.getArg(0)));
+	private static MethodInlineAttr inlineMth(MethodNode mth) {
+		List<InsnNode> insns = BlockUtils.collectInsnsWithLimit(mth.getBasicBlocks(), 2);
+		int insnsCount = insns.size();
+		if (insnsCount == 0) {
+			return null;
 		}
-		// synthetic field setter or method invoke
-		if (insnList.size() == 1) {
-			return addInlineAttr(mth, insnList.get(0));
+		if (insnsCount == 1) {
+			InsnNode insn = insns.get(0);
+			if (insn.getType() == InsnType.RETURN && insn.getArgsCount() == 1) {
+				// synthetic field getter
+				// set arg from 'return' instruction
+				InsnArg arg = insn.getArg(0);
+				if (!arg.isInsnWrap()) {
+					return null;
+				}
+				return addInlineAttr(mth, ((InsnWrapArg) arg).getWrapInsn());
+			}
+			// method invoke
+			return addInlineAttr(mth, insn);
+		}
+		if (insnsCount == 2 && insns.get(1).getType() == InsnType.RETURN) {
+			InsnNode firstInsn = insns.get(0);
+			InsnNode retInsn = insns.get(1);
+			if (retInsn.getArgsCount() == 0
+					|| isSyntheticAccessPattern(mth, firstInsn, retInsn)) {
+				return addInlineAttr(mth, firstInsn);
+			}
 		}
 		// TODO: inline field arithmetics. Disabled tests: TestAnonymousClass3a and TestAnonymousClass5
 		return null;
+	}
+
+	private static boolean isSyntheticAccessPattern(MethodNode mth, InsnNode firstInsn, InsnNode retInsn) {
+		List<RegisterArg> mthRegs = mth.getArgRegs();
+		switch (firstInsn.getType()) {
+			case IGET:
+				return mthRegs.size() == 1
+						&& retInsn.getArg(0).isSameVar(firstInsn.getResult())
+						&& firstInsn.getArg(0).isSameVar(mthRegs.get(0));
+			case SGET:
+				return mthRegs.isEmpty()
+						&& retInsn.getArg(0).isSameVar(firstInsn.getResult());
+
+			case IPUT:
+				return mthRegs.size() == 2
+						&& retInsn.getArg(0).isSameVar(mthRegs.get(1))
+						&& firstInsn.getArg(0).isSameVar(mthRegs.get(1))
+						&& firstInsn.getArg(1).isSameVar(mthRegs.get(0));
+			case SPUT:
+				return mthRegs.size() == 1
+						&& retInsn.getArg(0).isSameVar(mthRegs.get(0))
+						&& firstInsn.getArg(0).isSameVar(mthRegs.get(0));
+
+			case INVOKE:
+				if (!retInsn.getArg(0).isSameVar(firstInsn.getResult())) {
+					return false;
+				}
+				return ListUtils.orderedEquals(
+						mth.getArgRegs(), firstInsn.getArgList(),
+						(mthArg, insnArg) -> insnArg.isSameVar(mthArg));
+			default:
+				return false;
+		}
 	}
 
 	private static MethodInlineAttr addInlineAttr(MethodNode mth, InsnNode insn) {
@@ -110,7 +149,7 @@ public class MarkMethodsForInline extends AbstractVisitor {
 		InsnType insnType = insn.getType();
 		if (insnType == InsnType.INVOKE) {
 			InvokeNode invoke = (InvokeNode) insn;
-			MethodNode callMthNode = mth.root().deepResolveMethod(invoke.getCallMth());
+			MethodNode callMthNode = mth.root().resolveMethod(invoke.getCallMth());
 			if (callMthNode != null) {
 				FixAccessModifiers.changeVisibility(callMthNode, newVisFlag);
 			}
@@ -131,7 +170,7 @@ public class MarkMethodsForInline extends AbstractVisitor {
 			}
 		}
 		if (Consts.DEBUG) {
-			mth.addAttr(AType.COMMENTS, "JADX DEBUG: can't inline method, not implemented redirect type: " + insn);
+			mth.addDebugComment("can't inline method, not implemented redirect type: " + insn);
 		}
 		return false;
 	}

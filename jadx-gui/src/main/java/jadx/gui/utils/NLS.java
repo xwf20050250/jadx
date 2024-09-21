@@ -1,6 +1,5 @@
 package jadx.gui.utils;
 
-import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.net.URL;
@@ -33,9 +32,13 @@ public class NLS {
 
 		LANG_LOCALES.add(new LangLocale("en", "US")); // As default language
 		LANG_LOCALES.add(new LangLocale("zh", "CN"));
+		LANG_LOCALES.add(new LangLocale("zh", "TW"));
 		LANG_LOCALES.add(new LangLocale("es", "ES"));
 		LANG_LOCALES.add(new LangLocale("de", "DE"));
 		LANG_LOCALES.add(new LangLocale("ko", "KR"));
+		LANG_LOCALES.add(new LangLocale("pt", "BR"));
+		LANG_LOCALES.add(new LangLocale("ru", "RU"));
+		LANG_LOCALES.add(new LangLocale("id", "ID"));
 
 		LANG_LOCALES.forEach(NLS::load);
 
@@ -47,20 +50,20 @@ public class NLS {
 	private NLS() {
 	}
 
-	private static void load(LangLocale locale) {
-		ResourceBundle bundle;
-		ClassLoader classLoader = ClassLoader.getSystemClassLoader();
-		String resName = String.format("i18n/Messages_%s.properties", locale.get());
-		URL bundleUrl = classLoader.getResource(resName);
+	private static void load(LangLocale lang) {
+		Locale locale = lang.get();
+		String resName = String.format("i18n/Messages_%s.properties", locale.toLanguageTag().replace('-', '_'));
+		URL bundleUrl = NLS.class.getClassLoader().getResource(resName);
 		if (bundleUrl == null) {
 			throw new JadxRuntimeException("Locale resource not found: " + resName);
 		}
+		ResourceBundle bundle;
 		try (Reader reader = new InputStreamReader(bundleUrl.openStream(), StandardCharsets.UTF_8)) {
 			bundle = new PropertyResourceBundle(reader);
-		} catch (IOException e) {
+		} catch (Exception e) {
 			throw new JadxRuntimeException("Failed to load " + resName, e);
 		}
-		LANG_LOCALES_MAP.put(locale, bundle);
+		LANG_LOCALES_MAP.put(lang, bundle);
 	}
 
 	public static String str(String key) {
@@ -72,13 +75,7 @@ public class NLS {
 	}
 
 	public static String str(String key, Object... parameters) {
-		String value;
-		try {
-			value = localizedMessagesMap.getString(key);
-		} catch (MissingResourceException e) {
-			value = FALLBACK_MESSAGES_MAP.getString(key); // definitely exists
-		}
-		return String.format(value, parameters);
+		return String.format(str(key), parameters);
 	}
 
 	public static String str(String key, LangLocale locale) {

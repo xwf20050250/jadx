@@ -5,12 +5,14 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 import org.jetbrains.annotations.Nullable;
 
-import jadx.api.ICodeWriter;
 import jadx.api.plugins.input.insns.InsnData;
 import jadx.core.dex.attributes.AFlag;
+import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.LineAttrNode;
 import jadx.core.dex.instructions.InsnType;
 import jadx.core.dex.instructions.args.ArgType;
@@ -93,6 +95,10 @@ public class InsnNode extends LineAttrNode {
 		return arguments;
 	}
 
+	public List<InsnArg> getArgList() {
+		return arguments;
+	}
+
 	public int getArgsCount() {
 		return arguments.size();
 	}
@@ -117,12 +123,7 @@ public class InsnNode extends LineAttrNode {
 		if (getArgsCount() == 0) {
 			return false;
 		}
-		for (InsnArg insnArg : arguments) {
-			if (insnArg == arg || arg.sameRegAndSVar(insnArg)) {
-				return true;
-			}
-		}
-		return false;
+		return InsnUtils.containsVar(arguments, arg);
 	}
 
 	/**
@@ -261,24 +262,14 @@ public class InsnNode extends LineAttrNode {
 			case STR_CONCAT:
 				return true;
 
+			case SGET:
+			case IGET:
+				// TODO: allow to move final fields
+				return false;
+
 			default:
 				return false;
 		}
-	}
-
-	public boolean canReorderRecursive() {
-		if (!canReorder()) {
-			return false;
-		}
-		for (InsnArg arg : this.getArguments()) {
-			if (arg.isInsnWrap()) {
-				InsnNode wrapInsn = ((InsnWrapArg) arg).getWrapInsn();
-				if (!wrapInsn.canReorderRecursive()) {
-					return false;
-				}
-			}
-		}
-		return true;
 	}
 
 	public boolean containsWrappedInsn() {
@@ -288,6 +279,74 @@ public class InsnNode extends LineAttrNode {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Visit this instruction and all inner (wrapped) instructions
+	 */
+	public void visitInsns(Consumer<InsnNode> visitor) {
+		visitor.accept(this);
+		for (InsnArg arg : this.getArguments()) {
+			if (arg.isInsnWrap()) {
+				((InsnWrapArg) arg).getWrapInsn().visitInsns(visitor);
+			}
+		}
+	}
+
+	/**
+	 * Visit this instruction and all inner (wrapped) instructions
+	 * To terminate visiting return non-null value
+	 */
+	@Nullable
+	public <R> R visitInsns(Function<InsnNode, R> visitor) {
+		R result = visitor.apply(this);
+		if (result != null) {
+			return result;
+		}
+		for (InsnArg arg : this.getArguments()) {
+			if (arg.isInsnWrap()) {
+				InsnNode innerInsn = ((InsnWrapArg) arg).getWrapInsn();
+				R res = innerInsn.visitInsns(visitor);
+				if (res != null) {
+					return res;
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Visit all args recursively (including inner instructions), but excluding wrapped args
+	 */
+	public void visitArgs(Consumer<InsnArg> visitor) {
+		for (InsnArg arg : getArguments()) {
+			if (arg.isInsnWrap()) {
+				((InsnWrapArg) arg).getWrapInsn().visitArgs(visitor);
+			} else {
+				visitor.accept(arg);
+			}
+		}
+	}
+
+	/**
+	 * Visit all args recursively (including inner instructions), but excluding wrapped args.
+	 * To terminate visiting return non-null value
+	 */
+	@Nullable
+	public <R> R visitArgs(Function<InsnArg, R> visitor) {
+		for (InsnArg arg : getArguments()) {
+			R result;
+			if (arg.isInsnWrap()) {
+				InsnNode wrapInsn = ((InsnWrapArg) arg).getWrapInsn();
+				result = wrapInsn.visitArgs(visitor);
+			} else {
+				result = visitor.apply(arg);
+			}
+			if (result != null) {
+				return result;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -346,19 +405,23 @@ public class InsnNode extends LineAttrNode {
 		return copy;
 	}
 
+	public void copyAttributesFrom(InsnNode attrNode) {
+		super.copyAttributesFrom(attrNode);
+		this.addSourceLineFrom(attrNode);
+	}
+
 	/**
 	 * Make copy of InsnNode object.
-	 * <p>
+	 * <br>
 	 * NOTE: can't copy instruction with result argument
 	 * (SSA variable can't be used in two different assigns).
-	 * <p>
+	 * <br>
 	 * Prefer use next methods:
 	 * <ul>
 	 * <li>{@link #copyWithoutResult()} to explicitly state that result not needed
 	 * <li>{@link #copy(RegisterArg)} to provide new result arg
 	 * <li>{@link #copyWithNewSsaVar(MethodNode)} to make new SSA variable for result arg
 	 * </ul>
-	 * <p>
 	 */
 	public InsnNode copy() {
 		if (this.getClass() != InsnNode.class) {
@@ -417,7 +480,11 @@ public class InsnNode extends LineAttrNode {
 	public void rebindArgs() {
 		RegisterArg resArg = getResult();
 		if (resArg != null) {
-			resArg.getSVar().setAssign(resArg);
+			SSAVar ssaVar = resArg.getSVar();
+			if (ssaVar == null) {
+				throw new JadxRuntimeException("No SSA var for result arg: " + resArg + " from " + resArg.getParentInsn());
+			}
+			ssaVar.setAssign(resArg);
 		}
 		for (InsnArg arg : getArguments()) {
 			if (arg instanceof RegisterArg) {
@@ -444,10 +511,26 @@ public class InsnNode extends LineAttrNode {
 			case CONST_CLASS:
 			case CMP_L:
 			case CMP_G:
+			case NOP:
 				return false;
 
 			default:
 				return true;
+		}
+	}
+
+	public void inheritMetadata(InsnNode sourceInsn) {
+		if (insnType == InsnType.RETURN) {
+			this.copyLines(sourceInsn);
+			if (this.contains(AFlag.SYNTHETIC)) {
+				this.setOffset(sourceInsn.getOffset());
+				this.rewriteAttributeFrom(sourceInsn, AType.CODE_COMMENTS);
+			} else {
+				this.copyAttributeFrom(sourceInsn, AType.CODE_COMMENTS);
+			}
+		} else {
+			this.copyAttributeFrom(sourceInsn, AType.CODE_COMMENTS);
+			this.addSourceLineFrom(sourceInsn);
 		}
 	}
 
@@ -468,31 +551,57 @@ public class InsnNode extends LineAttrNode {
 		return super.equals(obj);
 	}
 
-	protected void appendArgs(StringBuilder sb) {
+	/**
+	 * Append arguments type, wrap line if too long
+	 *
+	 * @return true if args wrapped
+	 */
+	protected boolean appendArgs(StringBuilder sb) {
 		if (arguments.isEmpty()) {
-			return;
+			return false;
 		}
 		String argsStr = Utils.listToString(arguments);
 		if (argsStr.length() < 120) {
 			sb.append(argsStr);
-		} else {
-			// wrap args
-			String separator = ICodeWriter.NL + "  ";
-			sb.append(separator).append(Utils.listToString(arguments, separator));
-			sb.append(ICodeWriter.NL);
+			return false;
+		}
+		// wrap args
+		String separator = "\n  ";
+		sb.append(separator).append(Utils.listToString(arguments, separator));
+		sb.append('\n');
+		return true;
+	}
+
+	protected String attributesString() {
+		StringBuilder sb = new StringBuilder();
+		appendAttributes(sb);
+		return sb.toString();
+	}
+
+	protected void appendAttributes(StringBuilder sb) {
+		if (!isAttrStorageEmpty()) {
+			sb.append(' ').append(getAttributesString());
+		}
+		if (getSourceLine() != 0) {
+			sb.append(" (LINE:").append(getSourceLine()).append(')');
 		}
 	}
 
-	@Override
-	public String toString() {
+	protected String baseString() {
 		StringBuilder sb = new StringBuilder();
-		sb.append(InsnUtils.formatOffset(offset));
-		sb.append(": ");
-		sb.append(InsnUtils.insnTypeToString(insnType));
+		if (offset != -1) {
+			sb.append(InsnUtils.formatOffset(offset)).append(": ");
+		}
+		sb.append(insnType).append(' ');
 		if (result != null) {
 			sb.append(result).append(" = ");
 		}
 		appendArgs(sb);
 		return sb.toString();
+	}
+
+	@Override
+	public String toString() {
+		return baseString() + attributesString();
 	}
 }

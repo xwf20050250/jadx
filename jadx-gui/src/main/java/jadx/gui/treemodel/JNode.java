@@ -1,16 +1,25 @@
 package jadx.gui.treemodel;
 
+import java.util.Comparator;
+import java.util.Enumeration;
+import java.util.function.Predicate;
+
 import javax.swing.Icon;
+import javax.swing.JPopupMenu;
 import javax.swing.tree.DefaultMutableTreeNode;
 
 import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import jadx.api.ICodeInfo;
-import jadx.api.JadxDecompiler;
 import jadx.api.JavaNode;
+import jadx.api.metadata.ICodeNodeRef;
+import jadx.gui.ui.MainWindow;
+import jadx.gui.ui.panel.ContentPanel;
+import jadx.gui.ui.tab.TabbedPane;
 
-public abstract class JNode extends DefaultMutableTreeNode {
+public abstract class JNode extends DefaultMutableTreeNode implements Comparable<JNode> {
 
 	private static final long serialVersionUID = -5154479091781041008L;
 
@@ -27,11 +36,11 @@ public abstract class JNode extends DefaultMutableTreeNode {
 		return null;
 	}
 
-	public String getContent() {
+	public ICodeNodeRef getCodeNodeRef() {
 		return null;
 	}
 
-	public String getSmali() {
+	public @Nullable ContentPanel getContentPanel(TabbedPane tabbedPane) {
 		return null;
 	}
 
@@ -39,30 +48,13 @@ public abstract class JNode extends DefaultMutableTreeNode {
 		return SyntaxConstants.SYNTAX_STYLE_NONE;
 	}
 
-	public int getLine() {
-		return 0;
-	}
-
-	@Nullable
+	@NotNull
 	public ICodeInfo getCodeInfo() {
-		return null;
+		return ICodeInfo.EMPTY;
 	}
 
-	public final Integer getSourceLine(int line) {
-		ICodeInfo codeInfo = getCodeInfo();
-		if (codeInfo == null) {
-			return null;
-		}
-		return codeInfo.getLineMapping().get(line);
-	}
-
-	@Nullable
-	public JavaNode getJavaNodeAtPosition(JadxDecompiler decompiler, int line, int offset) {
-		ICodeInfo codeInfo = getCodeInfo();
-		if (codeInfo == null) {
-			return null;
-		}
-		return decompiler.getJavaNodeAtPosition(codeInfo, line, offset);
+	public boolean isEditable() {
+		return false;
 	}
 
 	public abstract Icon getIcon();
@@ -75,8 +67,12 @@ public abstract class JNode extends DefaultMutableTreeNode {
 		return javaNode.getName();
 	}
 
-	public boolean canRename() {
-		return false;
+	public boolean supportsQuickTabs() {
+		return true;
+	}
+
+	public @Nullable JPopupMenu onTreePopupMenu(MainWindow mainWindow) {
+		return null;
 	}
 
 	public abstract String makeString();
@@ -101,12 +97,55 @@ public abstract class JNode extends DefaultMutableTreeNode {
 		return makeLongString();
 	}
 
+	public boolean disableHtml() {
+		return true;
+	}
+
 	public int getPos() {
 		JavaNode javaNode = getJavaNode();
 		if (javaNode == null) {
 			return -1;
 		}
 		return javaNode.getDefPos();
+	}
+
+	public String getTooltip() {
+		return makeLongStringHtml();
+	}
+
+	public @Nullable JNode searchNode(Predicate<JNode> filter) {
+		Enumeration<?> en = this.children();
+		while (en.hasMoreElements()) {
+			JNode node = (JNode) en.nextElement();
+			if (filter.test(node)) {
+				return node;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Remove and return first found node
+	 */
+	public @Nullable JNode removeNode(Predicate<JNode> filter) {
+		Enumeration<?> en = this.children();
+		while (en.hasMoreElements()) {
+			JNode node = (JNode) en.nextElement();
+			if (filter.test(node)) {
+				this.remove(node);
+				return node;
+			}
+		}
+		return null;
+	}
+
+	private static final Comparator<JNode> COMPARATOR = Comparator
+			.comparing(JNode::makeLongString)
+			.thenComparingInt(JNode::getPos);
+
+	@Override
+	public int compareTo(@NotNull JNode other) {
+		return COMPARATOR.compare(this, other);
 	}
 
 	@Override

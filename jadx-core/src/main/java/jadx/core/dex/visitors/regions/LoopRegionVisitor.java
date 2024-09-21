@@ -1,6 +1,6 @@
 package jadx.core.dex.visitors.regions;
 
-import java.util.LinkedList;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -125,7 +125,7 @@ public class LoopRegionVisitor extends AbstractVisitor implements IRegionVisitor
 			return false;
 		}
 		// can't make loop if argument from increment instruction is assign in loop
-		List<RegisterArg> args = new LinkedList<>();
+		List<RegisterArg> args = new ArrayList<>();
 		incrInsn.getRegisterArgs(args);
 		for (RegisterArg iArg : args) {
 			try {
@@ -171,13 +171,19 @@ public class LoopRegionVisitor extends AbstractVisitor implements IRegionVisitor
 		}
 		SSAVar sVar = ((RegisterArg) condArg).getSVar();
 		List<RegisterArg> args = sVar.getUseList();
-		if (args.size() != 3 || args.get(2) != condArg) {
+		if (args.size() != 3) {
 			return null;
 		}
-		condArg = args.get(0);
-		RegisterArg arrIndex = args.get(1);
+		condArg = InsnUtils.getRegFromInsn(args, InsnType.IF);
+		if (condArg == null) {
+			return null;
+		}
+		RegisterArg arrIndex = InsnUtils.getRegFromInsn(args, InsnType.AGET);
+		if (arrIndex == null) {
+			return null;
+		}
 		InsnNode arrGetInsn = arrIndex.getParentInsn();
-		if (arrGetInsn == null || arrGetInsn.getType() != InsnType.AGET || arrGetInsn.containsWrappedInsn()) {
+		if (arrGetInsn == null || arrGetInsn.containsWrappedInsn()) {
 			return null;
 		}
 		if (!condition.isCompare()) {
@@ -204,11 +210,24 @@ public class LoopRegionVisitor extends AbstractVisitor implements IRegionVisitor
 			return null;
 		}
 		RegisterArg iterVar = arrGetInsn.getResult();
-		if (iterVar == null) {
-			return null;
-		}
-		if (!usedOnlyInLoop(mth, loopRegion, iterVar)) {
-			return null;
+		if (iterVar != null) {
+			if (!usedOnlyInLoop(mth, loopRegion, iterVar)) {
+				return null;
+			}
+		} else {
+			if (!arrGetInsn.contains(AFlag.WRAPPED)) {
+				return null;
+			}
+			// create new variable and replace wrapped insn
+			InsnArg wrapArg = BlockUtils.searchWrappedInsnParent(mth, arrGetInsn);
+			if (wrapArg == null || wrapArg.getParentInsn() == null) {
+				mth.addWarnComment("checkArrayForEach: Wrapped insn not found: " + arrGetInsn);
+				return null;
+			}
+			iterVar = mth.makeSyntheticRegArg(wrapArg.getType());
+			InsnNode parentInsn = wrapArg.getParentInsn();
+			parentInsn.replaceArg(wrapArg, iterVar.duplicate());
+			parentInsn.rebindArgs();
 		}
 
 		// array for each loop confirmed
@@ -218,16 +237,6 @@ public class LoopRegionVisitor extends AbstractVisitor implements IRegionVisitor
 		arrGetInsn.add(AFlag.DONT_GENERATE);
 		compare.getInsn().add(AFlag.DONT_GENERATE);
 
-		if (arrGetInsn.contains(AFlag.WRAPPED)) {
-			InsnArg wrapArg = BlockUtils.searchWrappedInsnParent(mth, arrGetInsn);
-			if (wrapArg != null && wrapArg.getParentInsn() != null) {
-				InsnNode parentInsn = wrapArg.getParentInsn();
-				parentInsn.replaceArg(wrapArg, iterVar.duplicate());
-				parentInsn.rebindArgs();
-			} else {
-				LOG.debug(" checkArrayForEach: Wrapped insn not found: {}, mth: {}", arrGetInsn, mth);
-			}
-		}
 		ForEachLoop forEachLoop = new ForEachLoop(iterVar, len.getArg(0));
 		forEachLoop.injectFakeInsns(loopRegion);
 		if (InsnUtils.dontGenerateIfNotUsed(len)) {
@@ -262,7 +271,7 @@ public class LoopRegionVisitor extends AbstractVisitor implements IRegionVisitor
 				|| !checkInvoke(nextCall, "java.util.Iterator", "next()Ljava/lang/Object;")) {
 			return false;
 		}
-		List<InsnNode> toSkip = new LinkedList<>();
+		List<InsnNode> toSkip = new ArrayList<>();
 		RegisterArg iterVar;
 		if (nextCall.contains(AFlag.WRAPPED)) {
 			InsnArg wrapArg = BlockUtils.searchWrappedInsnParent(mth, nextCall);
@@ -292,6 +301,7 @@ public class LoopRegionVisitor extends AbstractVisitor implements IRegionVisitor
 					if (iterVar == null) {
 						return false;
 					}
+					iterVar.remove(AFlag.REMOVE); // restore variable from inlined insn
 					nextCall.add(AFlag.DONT_GENERATE);
 					if (!fixIterableType(mth, iterableArg, iterVar)) {
 						return false;
@@ -320,6 +330,7 @@ public class LoopRegionVisitor extends AbstractVisitor implements IRegionVisitor
 		assignInsn.getResult().add(AFlag.DONT_GENERATE);
 
 		for (InsnNode insnNode : toSkip) {
+			insnNode.setResult(null);
 			insnNode.add(AFlag.DONT_GENERATE);
 		}
 		for (RegisterArg itArg : itUseList) {

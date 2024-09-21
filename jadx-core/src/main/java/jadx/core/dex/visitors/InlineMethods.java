@@ -9,18 +9,23 @@ import org.slf4j.LoggerFactory;
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.MethodInlineAttr;
+import jadx.core.dex.info.FieldInfo;
+import jadx.core.dex.info.MethodInfo;
+import jadx.core.dex.instructions.BaseInvokeNode;
+import jadx.core.dex.instructions.IndexInsnNode;
 import jadx.core.dex.instructions.InsnType;
 import jadx.core.dex.instructions.InvokeNode;
-import jadx.core.dex.instructions.args.ArgType;
 import jadx.core.dex.instructions.args.InsnArg;
 import jadx.core.dex.instructions.args.RegisterArg;
-import jadx.core.dex.instructions.args.SSAVar;
 import jadx.core.dex.nodes.BlockNode;
+import jadx.core.dex.nodes.ClassNode;
+import jadx.core.dex.nodes.FieldNode;
 import jadx.core.dex.nodes.IMethodDetails;
 import jadx.core.dex.nodes.InsnNode;
 import jadx.core.dex.nodes.MethodNode;
 import jadx.core.dex.visitors.typeinference.TypeInferenceVisitor;
 import jadx.core.utils.BlockUtils;
+import jadx.core.utils.ListUtils;
 import jadx.core.utils.exceptions.JadxException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 
@@ -54,12 +59,17 @@ public class InlineMethods extends AbstractVisitor {
 		}
 		MethodNode callMth = (MethodNode) callMthDetails;
 		try {
-			// TODO: sort inner classes process order by dependencies!
 			MethodInlineAttr mia = MarkMethodsForInline.process(callMth);
 			if (mia == null) {
-				// method not yet loaded => will retry at codegen stage
-				callMth.getParentClass().reloadAtCodegenStage();
-				return;
+				// method is not yet loaded => force process
+				mth.addDebugComment("Class process forced to load method for inline: " + callMth);
+				mth.root().getProcessClasses().forceProcess(callMth.getParentClass());
+				// run check again
+				mia = MarkMethodsForInline.process(callMth);
+				if (mia == null) {
+					mth.addWarnComment("Failed to check method for inline after forced process" + callMth);
+					return;
+				}
 			}
 			if (mia.notNeeded()) {
 				return;
@@ -77,7 +87,7 @@ public class InlineMethods extends AbstractVisitor {
 			inlCopy.setResult(resultArg.duplicate());
 		} else if (isAssignNeeded(mia.getInsn(), insn, callMth)) {
 			// add fake result to make correct java expression (see test TestGetterInlineNegative)
-			inlCopy.setResult(makeFakeArg(mth, callMth.getReturnType(), "unused"));
+			inlCopy.setResult(mth.makeSyntheticRegArg(callMth.getReturnType(), "unused"));
 		}
 		if (!callMth.getMethodInfo().getArgumentsTypes().isEmpty()) {
 			// remap args
@@ -112,6 +122,7 @@ public class InlineMethods extends AbstractVisitor {
 		if (methodDetailsAttr != null) {
 			inlCopy.addAttr(methodDetailsAttr);
 		}
+		updateUsageInfo(mth, callMth, mia.getInsn());
 	}
 
 	private boolean isAssignNeeded(InsnNode inlineInsn, InvokeNode parentInsn, MethodNode callMthNode) {
@@ -127,12 +138,38 @@ public class InlineMethods extends AbstractVisitor {
 		return !callMthNode.isVoidReturn();
 	}
 
-	private RegisterArg makeFakeArg(MethodNode mth, ArgType varType, String name) {
-		RegisterArg fakeArg = RegisterArg.reg(0, varType);
-		SSAVar ssaVar = mth.makeNewSVar(fakeArg);
-		InitCodeVariables.initCodeVar(ssaVar);
-		fakeArg.setName(name);
-		ssaVar.setType(varType);
-		return fakeArg;
+	private void updateUsageInfo(MethodNode mth, MethodNode inlinedMth, InsnNode insn) {
+		inlinedMth.getUseIn().remove(mth);
+		insn.visitInsns(innerInsn -> {
+			// TODO: share code with UsageInfoVisitor
+			switch (innerInsn.getType()) {
+				case INVOKE:
+				case CONSTRUCTOR:
+					MethodInfo callMth = ((BaseInvokeNode) innerInsn).getCallMth();
+					MethodNode callMthNode = mth.root().resolveMethod(callMth);
+					if (callMthNode != null) {
+						callMthNode.setUseIn(ListUtils.safeReplace(callMthNode.getUseIn(), inlinedMth, mth));
+						replaceClsUsage(mth, inlinedMth, callMthNode.getParentClass());
+					}
+					break;
+
+				case IGET:
+				case IPUT:
+				case SPUT:
+				case SGET:
+					FieldInfo fieldInfo = (FieldInfo) ((IndexInsnNode) innerInsn).getIndex();
+					FieldNode fieldNode = mth.root().resolveField(fieldInfo);
+					if (fieldNode != null) {
+						fieldNode.setUseIn(ListUtils.safeReplace(fieldNode.getUseIn(), inlinedMth, mth));
+						replaceClsUsage(mth, inlinedMth, fieldNode.getParentClass());
+					}
+					break;
+			}
+		});
+	}
+
+	private void replaceClsUsage(MethodNode mth, MethodNode inlinedMth, ClassNode parentClass) {
+		parentClass.setUseInMth(ListUtils.safeReplace(parentClass.getUseInMth(), inlinedMth, mth));
+		parentClass.setUseIn(ListUtils.safeReplace(parentClass.getUseIn(), inlinedMth.getParentClass(), mth.getParentClass()));
 	}
 }

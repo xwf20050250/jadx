@@ -2,6 +2,10 @@ package jadx.api;
 
 import java.util.List;
 
+import org.jetbrains.annotations.ApiStatus;
+
+import jadx.api.metadata.ICodeAnnotation;
+import jadx.api.metadata.ICodeNodeRef;
 import jadx.core.dex.info.AccessInfo;
 import jadx.core.dex.instructions.args.ArgType;
 import jadx.core.dex.nodes.FieldNode;
@@ -11,7 +15,7 @@ public final class JavaField implements JavaNode {
 	private final FieldNode field;
 	private final JavaClass parent;
 
-	JavaField(FieldNode f, JavaClass cls) {
+	JavaField(JavaClass cls, FieldNode f) {
 		this.field = f;
 		this.parent = cls;
 	}
@@ -24,6 +28,10 @@ public final class JavaField implements JavaNode {
 	@Override
 	public String getFullName() {
 		return parent.getFullName() + '.' + getName();
+	}
+
+	public String getRawName() {
+		return field.getName();
 	}
 
 	@Override
@@ -45,11 +53,6 @@ public final class JavaField implements JavaNode {
 	}
 
 	@Override
-	public int getDecompiledLine() {
-		return field.getDecompiledLine();
-	}
-
-	@Override
 	public int getDefPos() {
 		return field.getDefPosition();
 	}
@@ -59,9 +62,28 @@ public final class JavaField implements JavaNode {
 		return getDeclaringClass().getRootDecompiler().convertNodes(field.getUseIn());
 	}
 
+	@Override
+	public void removeAlias() {
+		this.field.getFieldInfo().removeAlias();
+	}
+
+	@Override
+	public boolean isOwnCodeAnnotation(ICodeAnnotation ann) {
+		if (ann.getAnnType() == ICodeAnnotation.AnnType.FIELD) {
+			return ann.equals(field);
+		}
+		return false;
+	}
+
+	@Override
+	public ICodeNodeRef getCodeNodeRef() {
+		return field;
+	}
+
 	/**
 	 * Internal API. Not Stable!
 	 */
+	@ApiStatus.Internal
 	public FieldNode getFieldNode() {
 		return field;
 	}

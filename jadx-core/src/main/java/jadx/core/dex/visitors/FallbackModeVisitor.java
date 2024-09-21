@@ -27,12 +27,13 @@ public class FallbackModeVisitor extends AbstractVisitor {
 				continue;
 			}
 			// remove 'exception catch' for instruction which don't throw any exceptions
-			CatchAttr catchAttr = insn.get(AType.CATCH_BLOCK);
+			CatchAttr catchAttr = insn.get(AType.EXC_CATCH);
 			if (catchAttr != null) {
 				switch (insn.getType()) {
 					case RETURN:
 					case IF:
 					case GOTO:
+					case JAVA_JSR:
 					case MOVE:
 					case MOVE_EXCEPTION:
 					case ARITH: // ??
@@ -42,7 +43,7 @@ public class FallbackModeVisitor extends AbstractVisitor {
 					case CONST_CLASS:
 					case CMP_L:
 					case CMP_G:
-						catchAttr.getTryBlock().removeInsn(mth, insn);
+						insn.remove(AType.EXC_CATCH);
 						break;
 
 					default:

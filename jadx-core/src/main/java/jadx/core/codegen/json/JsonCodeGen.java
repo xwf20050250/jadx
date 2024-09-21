@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -12,19 +11,20 @@ import com.google.gson.FieldNamingPolicy;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
-import jadx.api.CodePosition;
 import jadx.api.ICodeInfo;
 import jadx.api.ICodeWriter;
 import jadx.api.JadxArgs;
-import jadx.api.data.annotations.InsnCodeOffset;
 import jadx.api.impl.AnnotatedCodeWriter;
 import jadx.api.impl.SimpleCodeWriter;
+import jadx.api.metadata.ICodeMetadata;
+import jadx.api.metadata.annotations.InsnCodeOffset;
 import jadx.core.codegen.ClassGen;
 import jadx.core.codegen.MethodGen;
 import jadx.core.codegen.json.cls.JsonClass;
 import jadx.core.codegen.json.cls.JsonCodeLine;
 import jadx.core.codegen.json.cls.JsonField;
 import jadx.core.codegen.json.cls.JsonMethod;
+import jadx.core.codegen.utils.CodeGenUtils;
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.info.ClassInfo;
 import jadx.core.dex.instructions.args.ArgType;
@@ -32,7 +32,6 @@ import jadx.core.dex.nodes.ClassNode;
 import jadx.core.dex.nodes.FieldNode;
 import jadx.core.dex.nodes.MethodNode;
 import jadx.core.dex.nodes.RootNode;
-import jadx.core.utils.CodeGenUtils;
 import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 
@@ -77,16 +76,18 @@ public class JsonCodeGen {
 		}
 		jsonCls.setType(getClassTypeStr(cls));
 		jsonCls.setAccessFlags(cls.getAccessFlags().rawValue());
-		if (!Objects.equals(cls.getSuperClass(), ArgType.OBJECT)) {
-			jsonCls.setSuperClass(getTypeAlias(cls.getSuperClass()));
+		ArgType superClass = cls.getSuperClass();
+		if (superClass != null
+				&& !superClass.equals(ArgType.OBJECT)
+				&& !cls.contains(AFlag.REMOVE_SUPER_CLASS)) {
+			jsonCls.setSuperClass(getTypeAlias(classGen, superClass));
 		}
 		if (!cls.getInterfaces().isEmpty()) {
-			jsonCls.setInterfaces(Utils.collectionMap(cls.getInterfaces(), this::getTypeAlias));
+			jsonCls.setInterfaces(Utils.collectionMap(cls.getInterfaces(), clsType -> getTypeAlias(classGen, clsType)));
 		}
 
-		ICodeWriter cw = new SimpleCodeWriter();
-		CodeGenUtils.addComments(cw, cls);
-		classGen.insertDecompilationProblems(cw, cls);
+		ICodeWriter cw = new SimpleCodeWriter(args);
+		CodeGenUtils.addErrorsAndComments(cw, cls);
 		classGen.addClassDeclaration(cw);
 		jsonCls.setDeclaration(cw.getCodeStr());
 
@@ -129,7 +130,7 @@ public class JsonCodeGen {
 				jsonField.setAlias(field.getAlias());
 			}
 
-			ICodeWriter cw = new SimpleCodeWriter();
+			ICodeWriter cw = new SimpleCodeWriter(args);
 			classGen.addField(cw, field);
 			jsonField.setDeclaration(cw.getCodeStr());
 			jsonField.setAccessFlags(field.getAccessFlags().rawValue());
@@ -149,11 +150,11 @@ public class JsonCodeGen {
 				jsonMth.setAlias(mth.getAlias());
 			}
 			jsonMth.setSignature(mth.getMethodInfo().getShortId());
-			jsonMth.setReturnType(getTypeAlias(mth.getReturnType()));
-			jsonMth.setArguments(Utils.collectionMap(mth.getMethodInfo().getArgumentsTypes(), this::getTypeAlias));
+			jsonMth.setReturnType(getTypeAlias(classGen, mth.getReturnType()));
+			jsonMth.setArguments(Utils.collectionMap(mth.getMethodInfo().getArgumentsTypes(), clsType -> getTypeAlias(classGen, clsType)));
 
 			MethodGen mthGen = new MethodGen(classGen, mth);
-			ICodeWriter cw = new AnnotatedCodeWriter();
+			ICodeWriter cw = new AnnotatedCodeWriter(args);
 			mthGen.addDefinition(cw);
 			jsonMth.setDeclaration(cw.getCodeStr());
 			jsonMth.setAccessFlags(mth.getAccessFlags().rawValue());
@@ -180,38 +181,36 @@ public class JsonCodeGen {
 			return Collections.emptyList();
 		}
 
-		String[] lines = codeStr.split(ICodeWriter.NL);
-		Map<Integer, Integer> lineMapping = code.getLineMapping();
-		Map<CodePosition, Object> annotations = code.getAnnotations();
+		String[] lines = codeStr.split(args.getCodeNewLineStr());
+		Map<Integer, Integer> lineMapping = code.getCodeMetadata().getLineMapping();
+		ICodeMetadata metadata = code.getCodeMetadata();
 		long mthCodeOffset = mth.getMethodCodeOffset() + 16;
 
 		int linesCount = lines.length;
 		List<JsonCodeLine> codeLines = new ArrayList<>(linesCount);
+		int lineStartPos = 0;
+		int newLineLen = args.getCodeNewLineStr().length();
 		for (int i = 0; i < linesCount; i++) {
 			String codeLine = lines[i];
 			int line = i + 2;
 			JsonCodeLine jsonCodeLine = new JsonCodeLine();
 			jsonCodeLine.setCode(codeLine);
 			jsonCodeLine.setSourceLine(lineMapping.get(line));
-			Object obj = annotations.get(new CodePosition(line));
+			Object obj = metadata.getAt(lineStartPos);
 			if (obj instanceof InsnCodeOffset) {
 				long offset = ((InsnCodeOffset) obj).getOffset();
 				jsonCodeLine.setOffset("0x" + Long.toHexString(mthCodeOffset + offset * 2));
 			}
 			codeLines.add(jsonCodeLine);
+			lineStartPos += codeLine.length() + newLineLen;
 		}
 		return codeLines;
 	}
 
-	private String getTypeAlias(ArgType clsType) {
-		if (Objects.equals(clsType, ArgType.OBJECT)) {
-			return ArgType.OBJECT.getObject();
-		}
-		if (clsType.isObject()) {
-			ClassInfo classInfo = ClassInfo.fromType(root, clsType);
-			return classInfo.getAliasFullName();
-		}
-		return clsType.toString();
+	private String getTypeAlias(ClassGen classGen, ArgType clsType) {
+		ICodeWriter code = new SimpleCodeWriter(args);
+		classGen.useType(code, clsType);
+		return code.getCodeStr();
 	}
 
 	private String getClassTypeStr(ClassNode cls) {

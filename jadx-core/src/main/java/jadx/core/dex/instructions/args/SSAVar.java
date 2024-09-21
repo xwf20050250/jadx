@@ -2,9 +2,11 @@ package jadx.core.dex.instructions.args;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -23,8 +25,11 @@ import jadx.core.dex.visitors.typeinference.TypeInfo;
 import jadx.core.utils.StringUtils;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 
-public class SSAVar {
+public class SSAVar implements Comparable<SSAVar> {
 	private static final Logger LOG = LoggerFactory.getLogger(SSAVar.class);
+
+	private static final Comparator<SSAVar> SSA_VAR_COMPARATOR =
+			Comparator.comparingInt(SSAVar::getRegNum).thenComparingInt(SSAVar::getVersion);
 
 	private final int regNum;
 	private final int version;
@@ -59,8 +64,19 @@ public class SSAVar {
 		return assign;
 	}
 
+	@Nullable
+	public InsnNode getAssignInsn() {
+		return assign.getParentInsn();
+	}
+
 	public void setAssign(@NotNull RegisterArg assign) {
-		this.assign = assign;
+		RegisterArg oldAssign = this.assign;
+		if (oldAssign == null) {
+			this.assign = assign;
+		} else if (oldAssign != assign) {
+			oldAssign.resetSSAVar();
+			this.assign = assign;
+		}
 	}
 
 	public List<RegisterArg> getUseList() {
@@ -187,19 +203,13 @@ public class SSAVar {
 		return usedInPhi;
 	}
 
-	public boolean isUsedInPhi() {
-		return usedInPhi != null && !usedInPhi.isEmpty();
+	public boolean isAssignInPhi() {
+		InsnNode assignInsn = getAssignInsn();
+		return assignInsn != null && assignInsn.getType() == InsnType.PHI;
 	}
 
-	public int getVariableUseCount() {
-		int count = useList.size();
-		if (usedInPhi == null) {
-			return count;
-		}
-		for (PhiInsn phiInsn : usedInPhi) {
-			count += phiInsn.getResult().getSVar().getUseCount();
-		}
-		return count;
+	public boolean isUsedInPhi() {
+		return usedInPhi != null && !usedInPhi.isEmpty();
 	}
 
 	public void setName(String name) {
@@ -251,34 +261,6 @@ public class SSAVar {
 		return codeVar != null;
 	}
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (!(o instanceof SSAVar)) {
-			return false;
-		}
-		SSAVar ssaVar = (SSAVar) o;
-		return regNum == ssaVar.regNum && version == ssaVar.version;
-	}
-
-	@Override
-	public int hashCode() {
-		return 31 * regNum + version;
-	}
-
-	public String toShortString() {
-		return "r" + regNum + 'v' + version;
-	}
-
-	@Override
-	public String toString() {
-		return toShortString()
-				+ (StringUtils.notEmpty(getName()) ? " '" + getName() + "' " : "")
-				+ ' ' + typeInfo.getType();
-	}
-
 	public String getDetailedVarInfo(MethodNode mth) {
 		Set<ArgType> types = new HashSet<>();
 		Set<String> names = Collections.emptySet();
@@ -311,11 +293,53 @@ public class SSAVar {
 		StringBuilder sb = new StringBuilder();
 		sb.append('r').append(regNum).append('v').append(version);
 		if (!names.isEmpty()) {
-			sb.append(", names: ").append(names);
+			String orderedNames = names.stream()
+					.sorted()
+					.collect(Collectors.joining(", ", "[", "]"));
+
+			sb.append(", names: ").append(orderedNames);
 		}
 		if (!types.isEmpty()) {
-			sb.append(", types: ").append(types);
+			String orderedTypes = types.stream()
+					.map(String::valueOf)
+					.sorted()
+					.collect(Collectors.joining(", ", "[", "]"));
+
+			sb.append(", types: ").append(orderedTypes);
 		}
 		return sb.toString();
+	}
+
+	@Override
+	public boolean equals(Object o) {
+		if (this == o) {
+			return true;
+		}
+		if (!(o instanceof SSAVar)) {
+			return false;
+		}
+		SSAVar ssaVar = (SSAVar) o;
+		return regNum == ssaVar.regNum && version == ssaVar.version;
+	}
+
+	@Override
+	public int hashCode() {
+		return 31 * regNum + version;
+	}
+
+	@Override
+	public int compareTo(@NotNull SSAVar o) {
+		return SSA_VAR_COMPARATOR.compare(this, o);
+	}
+
+	public String toShortString() {
+		return "r" + regNum + 'v' + version;
+	}
+
+	@Override
+	public String toString() {
+		return toShortString()
+				+ (StringUtils.notEmpty(getName()) ? " '" + getName() + "' " : "")
+				+ ' ' + typeInfo.getType();
 	}
 }

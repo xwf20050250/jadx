@@ -3,26 +3,47 @@ package jadx.plugins.input.javaconvert;
 import java.nio.file.Path;
 import java.util.List;
 
+import jadx.api.plugins.JadxPlugin;
+import jadx.api.plugins.JadxPluginContext;
 import jadx.api.plugins.JadxPluginInfo;
-import jadx.api.plugins.input.JadxInputPlugin;
-import jadx.api.plugins.input.data.ILoadResult;
-import jadx.api.plugins.input.data.impl.EmptyLoadResult;
+import jadx.api.plugins.JadxPluginInfoBuilder;
+import jadx.api.plugins.data.JadxPluginRuntimeData;
+import jadx.api.plugins.input.ICodeLoader;
+import jadx.api.plugins.input.JadxCodeInput;
+import jadx.api.plugins.input.data.impl.EmptyCodeLoader;
 import jadx.plugins.input.dex.DexInputPlugin;
 
-public class JavaConvertPlugin implements JadxInputPlugin {
+public class JavaConvertPlugin implements JadxPlugin, JadxCodeInput {
+	public static final String PLUGIN_ID = "java-convert";
+
+	private final JavaConvertOptions options = new JavaConvertOptions();
+	private final JavaConvertLoader loader = new JavaConvertLoader(options);
+
+	private JadxPluginRuntimeData dexInput;
 
 	@Override
 	public JadxPluginInfo getPluginInfo() {
-		return new JadxPluginInfo("java-convert", "JavaConvert", "Convert .jar and .class files to dex");
+		return JadxPluginInfoBuilder.pluginId(PLUGIN_ID)
+				.name("Java Convert")
+				.description("Convert .class, .jar and .aar files to dex")
+				.provides("java-input")
+				.build();
 	}
 
 	@Override
-	public ILoadResult loadFiles(List<Path> input) {
-		ConvertResult result = JavaConvertLoader.process(input);
+	public void init(JadxPluginContext context) {
+		dexInput = context.plugins().getById(DexInputPlugin.PLUGIN_ID);
+		context.registerOptions(options);
+		context.addCodeInput(this);
+	}
+
+	@Override
+	public ICodeLoader loadFiles(List<Path> input) {
+		ConvertResult result = loader.process(input);
 		if (result.isEmpty()) {
 			result.close();
-			return EmptyLoadResult.INSTANCE;
+			return EmptyCodeLoader.INSTANCE;
 		}
-		return DexInputPlugin.loadDexFiles(result.getConverted(), result);
+		return dexInput.loadCodeFiles(result.getConverted(), result);
 	}
 }

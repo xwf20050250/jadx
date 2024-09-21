@@ -37,6 +37,10 @@ public class ResourceFile {
 	private ZipRef zipRef;
 	private String deobfName;
 
+	public static ResourceFile createResourceFile(JadxDecompiler decompiler, File file, ResourceType type) {
+		return new ResourceFile(decompiler, file.getAbsolutePath(), type);
+	}
+
 	public static ResourceFile createResourceFile(JadxDecompiler decompiler, String name, ResourceType type) {
 		if (!ZipSecurity.isValidZipEntryName(name)) {
 			return null;
@@ -58,6 +62,10 @@ public class ResourceFile {
 		return deobfName != null ? deobfName : name;
 	}
 
+	public void setDeobfName(String resFullName) {
+		this.deobfName = resFullName;
+	}
+
 	public ResourceType getType() {
 		return type;
 	}
@@ -70,13 +78,20 @@ public class ResourceFile {
 		this.zipRef = zipRef;
 	}
 
-	public void setAlias(ResourceEntry ri) {
-		int index = name.lastIndexOf('.');
-		deobfName = String.format("res/%s%s/%s%s",
-				ri.getTypeName(),
-				ri.getConfig(),
-				ri.getKeyName(),
-				index == -1 ? "" : name.substring(index));
+	public boolean setAlias(ResourceEntry ri) {
+		StringBuilder sb = new StringBuilder();
+		sb.append("res/").append(ri.getTypeName()).append(ri.getConfig());
+		sb.append("/").append(ri.getKeyName());
+		int lastDot = name.lastIndexOf('.');
+		if (lastDot != -1) {
+			sb.append(name.substring(lastDot));
+		}
+		String alias = sb.toString();
+		if (!alias.equals(name)) {
+			setDeobfName(alias);
+			return true;
+		}
+		return false;
 	}
 
 	public ZipRef getZipRef() {

@@ -1,34 +1,43 @@
 package jadx.core.dex.nodes;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
 
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import jadx.api.ICodeInfo;
+import jadx.api.JavaMethod;
+import jadx.api.metadata.ICodeNodeRef;
+import jadx.api.metadata.annotations.NodeDeclareRef;
+import jadx.api.metadata.annotations.VarNode;
 import jadx.api.plugins.input.data.ICodeReader;
 import jadx.api.plugins.input.data.IDebugInfo;
 import jadx.api.plugins.input.data.IMethodData;
-import jadx.api.plugins.input.data.annotations.EncodedValue;
-import jadx.api.plugins.input.data.annotations.IAnnotation;
-import jadx.core.Consts;
-import jadx.core.codegen.NameGen;
+import jadx.api.plugins.input.data.attributes.JadxAttrType;
+import jadx.api.plugins.input.data.attributes.types.ExceptionsAttr;
+import jadx.api.utils.CodeUtils;
 import jadx.core.dex.attributes.AFlag;
-import jadx.core.dex.attributes.annotations.AnnotationsList;
-import jadx.core.dex.attributes.annotations.MethodParameters;
+import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.LoopInfo;
+import jadx.core.dex.attributes.nodes.MethodOverrideAttr;
 import jadx.core.dex.attributes.nodes.NotificationAttrNode;
 import jadx.core.dex.info.AccessInfo;
 import jadx.core.dex.info.AccessInfo.AFType;
-import jadx.core.dex.info.ClassInfo;
 import jadx.core.dex.info.MethodInfo;
 import jadx.core.dex.instructions.InsnDecoder;
-import jadx.core.dex.instructions.args.*;
-import jadx.core.dex.nodes.VariableNode.VarKind;
+import jadx.core.dex.instructions.args.ArgType;
+import jadx.core.dex.instructions.args.InsnArg;
+import jadx.core.dex.instructions.args.RegisterArg;
+import jadx.core.dex.instructions.args.SSAVar;
 import jadx.core.dex.nodes.utils.TypeUtils;
 import jadx.core.dex.regions.Region;
 import jadx.core.dex.trycatch.ExceptionHandler;
+import jadx.core.dex.visitors.InitCodeVariables;
 import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.DecodeException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
@@ -43,11 +52,11 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 	private AccessInfo accFlags;
 
 	private final ICodeReader codeReader;
-	private final boolean methodIsVirtual;
 	private final int insnsCount;
 
 	private boolean noCode;
 	private int regsCount;
+	private int argsStartReg;
 
 	private boolean loaded;
 
@@ -61,20 +70,21 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 	private List<RegisterArg> argsList;
 	private InsnNode[] instructions;
 	private List<BlockNode> blocks;
+	private int blocksMaxCId;
 	private BlockNode enterBlock;
-	private List<BlockNode> exitBlocks;
+	private BlockNode exitBlock;
 	private List<SSAVar> sVars;
 	private List<ExceptionHandler> exceptionHandlers;
 	private List<LoopInfo> loops;
 	private Region region;
 
 	private List<MethodNode> useIn = Collections.emptyList();
-	private List<VariableNode> variables = new ArrayList<>();
+
+	private JavaMethod javaNode;
 
 	public static MethodNode build(ClassNode classNode, IMethodData methodData) {
 		MethodNode methodNode = new MethodNode(classNode, methodData);
-		AnnotationsList.attach(methodNode, methodData.getAnnotations());
-		MethodParameters.attach(methodNode, methodData.getParamsAnnotations());
+		methodNode.addAttrs(methodData.getAttributes());
 		return methodNode;
 	}
 
@@ -82,7 +92,6 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		this.mthInfo = MethodInfo.fromRef(classNode.root(), mthData.getMethodRef());
 		this.parentClass = classNode;
 		this.accFlags = new AccessInfo(mthData.getAccessFlags(), AFType.METHOD);
-		this.methodIsVirtual = !mthData.isDirect();
 		ICodeReader codeReader = mthData.getCodeReader();
 		this.noCode = codeReader == null;
 		if (noCode) {
@@ -90,7 +99,7 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 			this.insnsCount = 0;
 		} else {
 			this.codeReader = codeReader.copy();
-			this.insnsCount = codeReader.getInsnsCount();
+			this.insnsCount = codeReader.getUnitsCount();
 		}
 
 		this.retType = mthInfo.getReturnType();
@@ -99,53 +108,9 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		unload();
 	}
 
-	public List<VariableNode> getVars() {
-		return new ArrayList<>(variables);
-	}
-
-	public VariableNode getVariable(int index) {
-		if (index >= 0 && index < variables.size()) {
-			return variables.get(index);
-		}
-		return null;
-	}
-
-	public VariableNode declareVar(VisibleVar var, NameGen nameGen, VarKind varKind) {
-		if (var instanceof CodeVar) {
-			if (((CodeVar) var).isThis()) {
-				return null;
-			}
-		}
-		VariableNode varNode;
-		int index = var.getIndex();
-		if (index > -1) {
-			varNode = getVariable(var.getIndex());
-		} else {
-			index = variables.size();
-			var.setIndex(index);
-			String name = mthInfo.getVariableName(VariableNode.makeVarIndex(index, varKind));
-			if (name != null) {
-				var.setName(name); // set name with user renamed previously.
-			}
-			if (var instanceof CodeVar) { // let NameGen record this name or gen an valid name.
-				name = nameGen.assignArg((CodeVar) var);
-			} else if (var instanceof NamedArg) {
-				name = nameGen.assignNamedArg((NamedArg) var);
-			} else {
-				throw new JadxRuntimeException("Unexpected var type: " + var);
-			}
-			varNode = new VariableNode(this, name, var.getType(), varKind, index);
-			this.variables.add(varNode);
-		}
-		return varNode;
-	}
-
 	@Override
 	public void unload() {
 		loaded = false;
-		if (noCode) {
-			return;
-		}
 		// don't unload retType, argTypes, typeParameters
 		thisArg = null;
 		argsList = null;
@@ -153,7 +118,7 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		instructions = null;
 		blocks = null;
 		enterBlock = null;
-		exitBlocks = null;
+		exitBlock = null;
 		region = null;
 		exceptionHandlers = Collections.emptyList();
 		loops = Collections.emptyList();
@@ -185,6 +150,7 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 			}
 
 			this.regsCount = codeReader.getRegistersCount();
+			this.argsStartReg = codeReader.getArgsStartReg();
 			initArguments(this.argTypes);
 			InsnDecoder decoder = new InsnDecoder(this);
 			this.instructions = decoder.process(codeReader);
@@ -196,28 +162,8 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 				load();
 				noCode = false;
 			}
-			throw new DecodeException(this, "Load method exception: " + e.getMessage(), e);
-		}
-	}
-
-	public void checkInstructions() {
-		List<RegisterArg> list = new ArrayList<>();
-		for (InsnNode insnNode : instructions) {
-			if (insnNode == null) {
-				continue;
-			}
-			list.clear();
-			RegisterArg resultArg = insnNode.getResult();
-			if (resultArg != null) {
-				list.add(resultArg);
-			}
-			insnNode.getRegisterArgs(list);
-			for (RegisterArg arg : list) {
-				if (arg.getRegNum() >= regsCount) {
-					throw new JadxRuntimeException("Incorrect register number in instruction: " + insnNode
-							+ ", expected to be less than " + regsCount);
-				}
-			}
+			throw new DecodeException(this, "Load method exception: "
+					+ e.getClass().getSimpleName() + ": " + e.getMessage(), e);
 		}
 	}
 
@@ -231,21 +177,13 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 	}
 
 	private void initArguments(List<ArgType> args) {
-		int pos;
-		if (noCode) {
-			pos = 1;
-		} else {
-			pos = regsCount;
-			for (ArgType arg : args) {
-				pos -= arg.getRegCount();
-			}
-		}
+		int pos = getArgsStartPos(args);
 		TypeUtils typeUtils = root().getTypeUtils();
 		if (accFlags.isStatic()) {
 			thisArg = null;
 		} else {
 			ArgType thisClsType = typeUtils.expandTypeVariables(this, parentClass.getType());
-			RegisterArg arg = InsnArg.reg(pos - 1, thisClsType);
+			RegisterArg arg = InsnArg.reg(pos++, thisClsType);
 			arg.add(AFlag.THIS);
 			arg.add(AFlag.IMMUTABLE_TYPE);
 			thisArg = arg;
@@ -263,6 +201,23 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 			argsList.add(regArg);
 			pos += argType.getRegCount();
 		}
+	}
+
+	private int getArgsStartPos(List<ArgType> args) {
+		if (noCode) {
+			return 0;
+		}
+		if (argsStartReg != -1) {
+			return argsStartReg;
+		}
+		int pos = regsCount;
+		for (ArgType arg : args) {
+			pos -= arg.getRegCount();
+		}
+		if (!accFlags.isStatic()) {
+			pos--;
+		}
+		return pos;
 	}
 
 	@Override
@@ -296,6 +251,36 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 
 	public boolean isVoidReturn() {
 		return mthInfo.getReturnType().equals(ArgType.VOID);
+	}
+
+	public List<VarNode> collectArgNodes() {
+		ICodeInfo codeInfo = getTopParentClass().getCode();
+		int mthDefPos = getDefPosition();
+		int lineEndPos = CodeUtils.getLineEndForPos(codeInfo.getCodeStr(), mthDefPos);
+		int argsCount = mthInfo.getArgsCount();
+		List<VarNode> args = new ArrayList<>(argsCount);
+		codeInfo.getCodeMetadata().searchDown(mthDefPos, (pos, ann) -> {
+			if (pos > lineEndPos) {
+				// Stop at line end
+				return Boolean.TRUE;
+			}
+			if (ann instanceof NodeDeclareRef) {
+				ICodeNodeRef declRef = ((NodeDeclareRef) ann).getNode();
+				if (declRef instanceof VarNode) {
+					VarNode varNode = (VarNode) declRef;
+					if (!varNode.getMth().equals(this)) {
+						// Stop if we've gone too far and have entered a different method
+						return Boolean.TRUE;
+					}
+					args.add(varNode);
+				}
+			}
+			return null;
+		});
+		if (args.size() != argsCount) {
+			LOG.warn("Incorrect args count, expected: {}, got: {}", argsCount, args.size());
+		}
+		return args;
 	}
 
 	public List<RegisterArg> getArgRegs() {
@@ -339,8 +324,17 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		return mthInfo.getAlias();
 	}
 
+	@Override
+	public ClassNode getDeclaringClass() {
+		return parentClass;
+	}
+
 	public ClassNode getParentClass() {
 		return parentClass;
+	}
+
+	public ClassNode getTopParentClass() {
+		return parentClass.getTopParentClass();
 	}
 
 	public boolean isNoCode() {
@@ -357,18 +351,32 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 
 	public void initBasicBlocks() {
 		blocks = new ArrayList<>();
-		exitBlocks = new ArrayList<>(1);
 	}
 
 	public void finishBasicBlocks() {
 		blocks = lockList(blocks);
-		exitBlocks = lockList(exitBlocks);
 		loops = lockList(loops);
 		blocks.forEach(BlockNode::lock);
 	}
 
 	public List<BlockNode> getBasicBlocks() {
 		return blocks;
+	}
+
+	public void setBasicBlocks(List<BlockNode> blocks) {
+		this.blocks = blocks;
+		updateBlockIds(blocks);
+	}
+
+	public void updateBlockIds(List<BlockNode> blocks) {
+		int count = blocks.size();
+		for (int i = 0; i < count; i++) {
+			blocks.get(i).setId(i);
+		}
+	}
+
+	public int getNextBlockCId() {
+		return blocksMaxCId++;
 	}
 
 	public BlockNode getEnterBlock() {
@@ -379,12 +387,24 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		this.enterBlock = enterBlock;
 	}
 
-	public List<BlockNode> getExitBlocks() {
-		return exitBlocks;
+	public BlockNode getExitBlock() {
+		return exitBlock;
 	}
 
-	public void addExitBlock(BlockNode exitBlock) {
-		this.exitBlocks.add(exitBlock);
+	public void setExitBlock(BlockNode exitBlock) {
+		this.exitBlock = exitBlock;
+	}
+
+	public List<BlockNode> getPreExitBlocks() {
+		return exitBlock.getPredecessors();
+	}
+
+	public boolean isPreExitBlock(BlockNode block) {
+		List<BlockNode> successors = block.getSuccessors();
+		if (successors.size() == 1) {
+			return successors.get(0).equals(exitBlock);
+		}
+		return exitBlock.getPredecessors().contains(block);
 	}
 
 	public void registerLoop(LoopInfo loop) {
@@ -432,23 +452,6 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 	public ExceptionHandler addExceptionHandler(ExceptionHandler handler) {
 		if (exceptionHandlers.isEmpty()) {
 			exceptionHandlers = new ArrayList<>(2);
-		} else {
-			for (ExceptionHandler h : exceptionHandlers) {
-				if (h.equals(handler)) {
-					return h;
-				}
-				if (h.getHandleOffset() == handler.getHandleOffset()) {
-					if (h.getTryBlock() == handler.getTryBlock()) {
-						for (ClassInfo catchType : handler.getCatchTypes()) {
-							h.addCatchType(catchType);
-						}
-					} else {
-						// same handlers from different try blocks
-						// will merge later
-					}
-					return h;
-				}
-			}
 		}
 		exceptionHandlers.add(handler);
 		return handler;
@@ -471,14 +474,12 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 	}
 
 	@Override
-	@SuppressWarnings("unchecked")
 	public List<ArgType> getThrows() {
-		IAnnotation an = getAnnotation(Consts.DALVIK_THROWS);
-		if (an == null) {
+		ExceptionsAttr exceptionsAttr = get(JadxAttrType.EXCEPTIONS);
+		if (exceptionsAttr == null) {
 			return Collections.emptyList();
 		}
-		List<EncodedValue> types = (List<EncodedValue>) an.getDefaultValue().getValue();
-		return Utils.collectionMap(types, ev -> ArgType.object((String) ev.getValue()));
+		return Utils.collectionMap(exceptionsAttr.getList(), ArgType::object);
 	}
 
 	/**
@@ -519,12 +520,30 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		return false;
 	}
 
-	public boolean isVirtual() {
-		return methodIsVirtual;
-	}
-
 	public int getRegsCount() {
 		return regsCount;
+	}
+
+	public int getArgsStartReg() {
+		return argsStartReg;
+	}
+
+	/**
+	 * Create new fake register arg.
+	 */
+	public RegisterArg makeSyntheticRegArg(ArgType type) {
+		RegisterArg arg = InsnArg.reg(0, type);
+		arg.add(AFlag.SYNTHETIC);
+		SSAVar ssaVar = makeNewSVar(arg);
+		InitCodeVariables.initCodeVar(ssaVar);
+		ssaVar.setType(type);
+		return arg;
+	}
+
+	public RegisterArg makeSyntheticRegArg(ArgType type, String name) {
+		RegisterArg arg = makeSyntheticRegArg(type);
+		arg.setName(name);
+		return arg;
 	}
 
 	public SSAVar makeNewSVar(@NotNull RegisterArg assignArg) {
@@ -541,7 +560,7 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		return var;
 	}
 
-	public int getNextSVarVersion(int regNum) {
+	private int getNextSVarVersion(int regNum) {
 		int v = -1;
 		for (SSAVar sVar : sVars) {
 			if (sVar.getRegNum() == regNum) {
@@ -617,8 +636,20 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		noCode = true;
 	}
 
+	@Override
+	public void rename(String newName) {
+		MethodOverrideAttr overrideAttr = get(AType.METHOD_OVERRIDE);
+		if (overrideAttr != null) {
+			for (MethodNode relatedMth : overrideAttr.getRelatedMthNodes()) {
+				relatedMth.getMethodInfo().setAlias(newName);
+			}
+		} else {
+			mthInfo.setAlias(newName);
+		}
+	}
+
 	/**
-	 * Calculate instructions count at currect stage
+	 * Calculate instructions count at current stage
 	 */
 	public long countInsns() {
 		if (instructions != null) {
@@ -646,7 +677,7 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 		return loaded;
 	}
 
-	public ICodeReader getCodeReader() {
+	public @Nullable ICodeReader getCodeReader() {
 		return codeReader;
 	}
 
@@ -656,6 +687,19 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 
 	public void setUseIn(List<MethodNode> useIn) {
 		this.useIn = useIn;
+	}
+
+	public JavaMethod getJavaNode() {
+		return javaNode;
+	}
+
+	public void setJavaNode(JavaMethod javaNode) {
+		this.javaNode = javaNode;
+	}
+
+	@Override
+	public AnnType getAnnType() {
+		return AnnType.METHOD;
 	}
 
 	@Override
@@ -678,6 +722,11 @@ public class MethodNode extends NotificationAttrNode implements IMethodDetails, 
 	@Override
 	public int compareTo(@NotNull MethodNode o) {
 		return mthInfo.compareTo(o.mthInfo);
+	}
+
+	@Override
+	public String toAttrString() {
+		return IMethodDetails.super.toAttrString() + " (m)";
 	}
 
 	@Override

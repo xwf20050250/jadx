@@ -1,19 +1,26 @@
 package jadx.gui.ui.codearea;
 
-import java.awt.*;
+import java.awt.BorderLayout;
+import java.awt.Point;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import jadx.gui.treemodel.JNode;
-import jadx.gui.ui.TabbedPane;
+import jadx.gui.ui.panel.IViewStateSupport;
+import jadx.gui.ui.tab.TabbedPane;
 
-public final class CodeContentPanel extends AbstractCodeContentPanel {
+public final class CodeContentPanel extends AbstractCodeContentPanel implements IViewStateSupport {
 	private static final long serialVersionUID = 5310536092010045565L;
+
+	private static final Logger LOG = LoggerFactory.getLogger(CodeContentPanel.class);
 
 	private final CodePanel codePanel;
 
 	public CodeContentPanel(TabbedPane panel, JNode jnode) {
 		super(panel, jnode);
 		setLayout(new BorderLayout());
-		codePanel = new CodePanel(new CodeArea(this));
+		codePanel = new CodePanel(new CodeArea(this, jnode));
 		add(codePanel, BorderLayout.CENTER);
 		codePanel.load();
 	}
@@ -22,16 +29,6 @@ public final class CodeContentPanel extends AbstractCodeContentPanel {
 	public void loadSettings() {
 		codePanel.loadSettings();
 		updateUI();
-	}
-
-	@Override
-	public TabbedPane getTabbedPane() {
-		return tabbedPane;
-	}
-
-	@Override
-	public JNode getNode() {
-		return node;
 	}
 
 	SearchBar getSearchBar() {
@@ -56,5 +53,28 @@ public final class CodeContentPanel extends AbstractCodeContentPanel {
 			n = (JNode) n.getParent();
 		}
 		return '/' + s;
+	}
+
+	@Override
+	public void saveEditorViewState(EditorViewState viewState) {
+		int caretPos = codePanel.getCodeArea().getCaretPosition();
+		Point viewPoint = codePanel.getCodeScrollPane().getViewport().getViewPosition();
+		viewState.setCaretPos(caretPos);
+		viewState.setViewPoint(viewPoint);
+	}
+
+	@Override
+	public void restoreEditorViewState(EditorViewState viewState) {
+		try {
+			codePanel.getCodeScrollPane().getViewport().setViewPosition(viewState.getViewPoint());
+			codePanel.getCodeArea().setCaretPosition(viewState.getCaretPos());
+		} catch (Exception e) {
+			LOG.error("Failed to restore view state", e);
+		}
+	}
+
+	@Override
+	public void dispose() {
+		codePanel.dispose();
 	}
 }

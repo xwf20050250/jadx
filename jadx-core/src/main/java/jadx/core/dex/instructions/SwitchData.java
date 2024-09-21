@@ -16,6 +16,14 @@ public class SwitchData extends InsnNode {
 		this.targets = payload.getTargets();
 	}
 
+	public void fixTargets(int switchOffset) {
+		int size = this.size;
+		int[] targets = this.targets;
+		for (int i = 0; i < size; i++) {
+			targets[i] += switchOffset;
+		}
+	}
+
 	public int getSize() {
 		return size;
 	}
@@ -36,6 +44,7 @@ public class SwitchData extends InsnNode {
 			sb.append(keys[i]).append("->").append(InsnUtils.formatOffset(targets[i])).append(", ");
 		}
 		sb.append('}');
+		appendAttributes(sb);
 		return sb.toString();
 	}
 }

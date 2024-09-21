@@ -1,8 +1,12 @@
 package jadx.core.dex.visitors.typeinference;
 
+import org.jetbrains.annotations.Nullable;
+
 import jadx.core.dex.instructions.InvokeNode;
 import jadx.core.dex.instructions.args.ArgType;
+import jadx.core.dex.instructions.args.InsnArg;
 import jadx.core.dex.instructions.args.RegisterArg;
+import jadx.core.dex.nodes.IMethodDetails;
 import jadx.core.dex.nodes.RootNode;
 
 /**
@@ -28,20 +32,44 @@ public final class TypeBoundInvokeAssign implements ITypeBoundDynamic {
 
 	@Override
 	public ArgType getType(TypeUpdateInfo updateInfo) {
-		return getReturnType(updateInfo.getType(invokeNode.getArg(0)));
+		return getReturnType(updateInfo.getType(getInstanceArg()));
 	}
 
 	@Override
 	public ArgType getType() {
-		return getReturnType(invokeNode.getArg(0).getType());
+		return getReturnType(getInstanceArg().getType());
 	}
 
 	private ArgType getReturnType(ArgType instanceType) {
-		ArgType resultGeneric = root.getTypeUtils().replaceClassGenerics(instanceType, genericReturnType);
-		if (resultGeneric != null && !resultGeneric.isWildcard()) {
-			return resultGeneric;
+		ArgType mthDeclType;
+		IMethodDetails methodDetails = root.getMethodUtils().getMethodDetails(invokeNode);
+		if (methodDetails != null) {
+			// use methods detail to resolve declaration class for virtual invokes
+			mthDeclType = methodDetails.getMethodInfo().getDeclClass().getType();
+		} else {
+			mthDeclType = instanceType;
+		}
+		ArgType resultGeneric = root.getTypeUtils().replaceClassGenerics(instanceType, mthDeclType, genericReturnType);
+		ArgType result = processResultType(resultGeneric);
+		if (result != null) {
+			return result;
 		}
 		return invokeNode.getCallMth().getReturnType();
+	}
+
+	@Nullable
+	private ArgType processResultType(@Nullable ArgType resultGeneric) {
+		if (resultGeneric == null) {
+			return null;
+		}
+		if (!resultGeneric.isWildcard()) {
+			return resultGeneric;
+		}
+		return resultGeneric.getWildcardType();
+	}
+
+	private InsnArg getInstanceArg() {
+		return invokeNode.getArg(0);
 	}
 
 	@Override
@@ -71,7 +99,7 @@ public final class TypeBoundInvokeAssign implements ITypeBoundDynamic {
 		return "InvokeAssign{" + invokeNode.getCallMth().getShortId()
 				+ ", returnType=" + genericReturnType
 				+ ", currentType=" + getType()
-				+ ", instanceArg=" + invokeNode.getArg(0)
+				+ ", instanceArg=" + getInstanceArg()
 				+ '}';
 	}
 }

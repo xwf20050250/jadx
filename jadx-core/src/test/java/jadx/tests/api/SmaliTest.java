@@ -7,19 +7,33 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.jetbrains.annotations.Nullable;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 
 import jadx.api.JadxInternalAccess;
 import jadx.core.dex.nodes.ClassNode;
 import jadx.core.dex.nodes.RootNode;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.notNullValue;
+import static jadx.tests.api.utils.assertj.JadxAssertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class SmaliTest extends IntegrationTest {
 
-	private static final String SMALI_TESTS_PROJECT = "jadx-core";
 	private static final String SMALI_TESTS_DIR = "src/test/smali";
 	private static final String SMALI_TESTS_EXT = ".smali";
+
+	private String currentProject = "jadx-core";
+
+	public void setCurrentProject(String currentProject) {
+		this.currentProject = currentProject;
+	}
+
+	@BeforeEach
+	public void init() {
+		Assumptions.assumeFalse(USE_JAVA_INPUT, "skip smali test for java input tests");
+		super.init();
+		this.useDexInput();
+	}
 
 	protected ClassNode getClassNodeFromSmali(String file, String clsName) {
 		File smaliFile = getSmaliFile(file);
@@ -53,6 +67,10 @@ public abstract class SmaliTest extends IntegrationTest {
 		return searchCls(loadFromSmaliFiles(), getTestPkg() + '.' + clsName);
 	}
 
+	protected ClassNode getClassNodeFromSmaliFiles() {
+		return searchCls(loadFromSmaliFiles(), getTestPkg() + '.' + getTestName());
+	}
+
 	protected List<ClassNode> loadFromSmaliFiles() {
 		jadxDecompiler = loadFiles(collectSmaliFiles(getTestPkg(), getTestName()));
 		RootNode root = JadxInternalAccess.getRoot(jadxDecompiler);
@@ -70,30 +88,30 @@ public abstract class SmaliTest extends IntegrationTest {
 		}
 		File smaliDir = getSmaliDir(smaliFilesDir);
 		String[] smaliFileNames = smaliDir.list((dir, name) -> name.endsWith(".smali"));
-		assertThat("Smali files not found in " + smaliDir, smaliFileNames, notNullValue());
+		assertThat(smaliFileNames).as("Smali files not found in " + smaliDir).isNotNull();
 		return Stream.of(smaliFileNames)
 				.map(file -> new File(smaliDir, file))
 				.collect(Collectors.toList());
 	}
 
-	private static File getSmaliFile(String baseName) {
+	private File getSmaliFile(String baseName) {
 		File smaliFile = new File(SMALI_TESTS_DIR, baseName + SMALI_TESTS_EXT);
 		if (smaliFile.exists()) {
 			return smaliFile;
 		}
-		File pathFromRoot = new File(SMALI_TESTS_PROJECT, smaliFile.getPath());
+		File pathFromRoot = new File(currentProject, smaliFile.getPath());
 		if (pathFromRoot.exists()) {
 			return pathFromRoot;
 		}
 		throw new AssertionError("Smali file not found: " + smaliFile.getPath());
 	}
 
-	private static File getSmaliDir(String baseName) {
+	private File getSmaliDir(String baseName) {
 		File smaliDir = new File(SMALI_TESTS_DIR, baseName);
 		if (smaliDir.exists()) {
 			return smaliDir;
 		}
-		File pathFromRoot = new File(SMALI_TESTS_PROJECT, smaliDir.getPath());
+		File pathFromRoot = new File(currentProject, smaliDir.getPath());
 		if (pathFromRoot.exists()) {
 			return pathFromRoot;
 		}

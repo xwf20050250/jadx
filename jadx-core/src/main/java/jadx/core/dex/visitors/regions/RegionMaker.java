@@ -2,9 +2,9 @@ package jadx.core.dex.visitors.regions;
 
 import java.util.ArrayList;
 import java.util.BitSet;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -13,14 +13,13 @@ import java.util.Optional;
 import java.util.Set;
 
 import org.jetbrains.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import jadx.core.dex.attributes.AFlag;
 import jadx.core.dex.attributes.AType;
 import jadx.core.dex.attributes.nodes.EdgeInsnAttr;
 import jadx.core.dex.attributes.nodes.LoopInfo;
 import jadx.core.dex.attributes.nodes.LoopLabelAttr;
+import jadx.core.dex.attributes.nodes.RegionRefAttr;
 import jadx.core.dex.instructions.IfNode;
 import jadx.core.dex.instructions.InsnType;
 import jadx.core.dex.instructions.SwitchInsn;
@@ -41,11 +40,11 @@ import jadx.core.dex.regions.conditions.IfRegion;
 import jadx.core.dex.regions.loops.LoopRegion;
 import jadx.core.dex.trycatch.ExcHandlerAttr;
 import jadx.core.dex.trycatch.ExceptionHandler;
-import jadx.core.dex.trycatch.SplitterBlockAttr;
-import jadx.core.dex.trycatch.TryCatchBlock;
+import jadx.core.dex.trycatch.TryCatchBlockAttr;
 import jadx.core.utils.BlockUtils;
-import jadx.core.utils.ErrorsCounter;
+import jadx.core.utils.ListUtils;
 import jadx.core.utils.RegionUtils;
+import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.JadxOverflowException;
 import jadx.core.utils.exceptions.JadxRuntimeException;
 
@@ -53,13 +52,11 @@ import static jadx.core.dex.visitors.regions.IfMakerHelper.confirmMerge;
 import static jadx.core.dex.visitors.regions.IfMakerHelper.makeIfInfo;
 import static jadx.core.dex.visitors.regions.IfMakerHelper.mergeNestedIfNodes;
 import static jadx.core.dex.visitors.regions.IfMakerHelper.searchNestedIf;
+import static jadx.core.utils.BlockUtils.followEmptyPath;
 import static jadx.core.utils.BlockUtils.getNextBlock;
 import static jadx.core.utils.BlockUtils.isPathExists;
-import static jadx.core.utils.BlockUtils.skipSyntheticSuccessor;
 
 public class RegionMaker {
-	private static final Logger LOG = LoggerFactory.getLogger(RegionMaker.class);
-
 	private final MethodNode mth;
 	private final int regionsLimit;
 	private final BitSet processedBlocks;
@@ -125,6 +122,9 @@ public class RegionMaker {
 	 * Recursively traverse all blocks from 'block' until block from 'exits'
 	 */
 	private BlockNode traverse(IRegion r, BlockNode block, RegionStack stack) {
+		if (block.contains(AFlag.MTH_EXIT_BLOCK)) {
+			return null;
+		}
 		BlockNode next = null;
 		boolean processed = false;
 
@@ -182,7 +182,7 @@ public class RegionMaker {
 		Set<BlockNode> exitBlocksSet = loop.getExitNodes();
 
 		// set exit blocks scan order priority
-		// this can help if loop have several exits (after using 'break' or 'return' in loop)
+		// this can help if loop has several exits (after using 'break' or 'return' in loop)
 		List<BlockNode> exitBlocks = new ArrayList<>(exitBlocksSet.size());
 		BlockNode nextStart = getNextBlock(loopStart);
 		if (nextStart != null && exitBlocksSet.remove(nextStart)) {
@@ -206,14 +206,16 @@ public class RegionMaker {
 		IRegion outerRegion = stack.peekRegion();
 		stack.push(loopRegion);
 
-		IfInfo condInfo = makeIfInfo(loopRegion.getHeader());
+		IfInfo condInfo = makeIfInfo(mth, loopRegion.getHeader());
 		condInfo = searchNestedIf(condInfo);
 		confirmMerge(condInfo);
 		if (!loop.getLoopBlocks().contains(condInfo.getThenBlock())) {
 			// invert loop condition if 'then' points to exit
 			condInfo = IfInfo.invert(condInfo);
 		}
-		loopRegion.setCondition(condInfo.getCondition());
+		loopRegion.updateCondition(condInfo);
+		// prevent if's merge with loop condition
+		condInfo.getMergedBlocks().forEach(b -> b.add(AFlag.ADDED_TO_REGION));
 		exitBlocks.removeAll(condInfo.getMergedBlocks());
 
 		if (!exitBlocks.isEmpty()) {
@@ -231,7 +233,8 @@ public class RegionMaker {
 		BlockNode out;
 		if (loopRegion.isConditionAtEnd()) {
 			BlockNode thenBlock = condInfo.getThenBlock();
-			out = thenBlock == loopStart ? condInfo.getElseBlock() : thenBlock;
+			out = thenBlock == loop.getEnd() || thenBlock == loopStart ? condInfo.getElseBlock() : thenBlock;
+			out = BlockUtils.followEmptyPath(out);
 			loopStart.remove(AType.LOOP);
 			loop.getEnd().add(AFlag.ADDED_TO_REGION);
 			stack.addExit(loop.getEnd());
@@ -243,6 +246,7 @@ public class RegionMaker {
 		} else {
 			out = condInfo.getElseBlock();
 			if (outerRegion != null
+					&& out != null
 					&& out.contains(AFlag.LOOP_START)
 					&& !out.getAll(AType.LOOP).contains(loop)
 					&& RegionUtils.isRegionContainsBlock(outerRegion, out)) {
@@ -259,7 +263,7 @@ public class RegionMaker {
 				body = makeRegion(loopBody, stack);
 			}
 			// add blocks from loop start to first condition block
-			BlockNode conditionBlock = condInfo.getIfBlock();
+			BlockNode conditionBlock = condInfo.getFirstIfBlock();
 			if (loopStart != conditionBlock) {
 				Set<BlockNode> blocks = BlockUtils.getAllPathsBlocks(loopStart, conditionBlock);
 				blocks.remove(conditionBlock);
@@ -295,9 +299,10 @@ public class RegionMaker {
 				// skip nested loop condition
 				continue;
 			}
-			LoopRegion loopRegion = new LoopRegion(curRegion, loop, block, block == loop.getEnd());
+			boolean exitAtLoopEnd = isExitAtLoopEnd(block, loop);
+			LoopRegion loopRegion = new LoopRegion(curRegion, loop, block, exitAtLoopEnd);
 			boolean found;
-			if (block == loop.getStart() || block == loop.getEnd()
+			if (block == loop.getStart() || exitAtLoopEnd
 					|| BlockUtils.isEmptySimplePath(loop.getStart(), block)) {
 				found = true;
 			} else if (block.getPredecessors().contains(loop.getStart())) {
@@ -337,23 +342,35 @@ public class RegionMaker {
 		return null;
 	}
 
+	private static boolean isExitAtLoopEnd(BlockNode exit, LoopInfo loop) {
+		BlockNode loopEnd = loop.getEnd();
+		if (exit == loopEnd) {
+			return true;
+		}
+		BlockNode loopStart = loop.getStart();
+		if (loopStart.getInstructions().isEmpty() && ListUtils.isSingleElement(loopStart.getSuccessors(), exit)) {
+			return false;
+		}
+		return loopEnd.getInstructions().isEmpty() && ListUtils.isSingleElement(loopEnd.getPredecessors(), exit);
+	}
+
 	private boolean checkLoopExits(LoopInfo loop, BlockNode mainExitBlock) {
 		List<Edge> exitEdges = loop.getExitEdges();
 		if (exitEdges.size() < 2) {
 			return true;
 		}
 		Optional<Edge> mainEdgeOpt = exitEdges.stream().filter(edge -> edge.getSource() == mainExitBlock).findFirst();
-		if (!mainEdgeOpt.isPresent()) {
+		if (mainEdgeOpt.isEmpty()) {
 			throw new JadxRuntimeException("Not found exit edge by exit block: " + mainExitBlock);
 		}
 		Edge mainExitEdge = mainEdgeOpt.get();
-		BlockNode mainOutBlock = skipSyntheticSuccessor(mainExitEdge.getTarget());
+		BlockNode mainOutBlock = mainExitEdge.getTarget();
 		for (Edge exitEdge : exitEdges) {
 			if (exitEdge != mainExitEdge) {
-				BlockNode outBlock = skipSyntheticSuccessor(exitEdge.getTarget());
 				// all exit paths must be same or don't cross (will be inside loop)
-				if (!isEqualPaths(mainOutBlock, outBlock)) {
-					BlockNode crossBlock = BlockUtils.getPathCross(mth, mainOutBlock, outBlock);
+				BlockNode exitBlock = exitEdge.getTarget();
+				if (!isEqualPaths(mainOutBlock, exitBlock)) {
+					BlockNode crossBlock = BlockUtils.getPathCross(mth, mainOutBlock, exitBlock);
 					if (crossBlock != null) {
 						return false;
 					}
@@ -431,15 +448,15 @@ public class RegionMaker {
 	}
 
 	private boolean canInsertBreak(BlockNode exit) {
-		if (exit.contains(AFlag.RETURN)
-				|| BlockUtils.checkLastInsnType(exit, InsnType.BREAK)) {
+		if (BlockUtils.containsExitInsn(exit)) {
 			return false;
 		}
 		List<BlockNode> simplePath = BlockUtils.buildSimplePath(exit);
 		if (!simplePath.isEmpty()) {
 			BlockNode lastBlock = simplePath.get(simplePath.size() - 1);
-			if (lastBlock.contains(AFlag.RETURN)
-					|| lastBlock.getSuccessors().isEmpty()) {
+			if (lastBlock.isMthExitBlock()
+					|| lastBlock.isReturnBlock()
+					|| mth.isPreExitBlock(lastBlock)) {
 				return false;
 			}
 		}
@@ -455,29 +472,27 @@ public class RegionMaker {
 
 	private boolean insertLoopBreak(RegionStack stack, LoopInfo loop, BlockNode loopExit, Edge exitEdge) {
 		BlockNode exit = exitEdge.getTarget();
-		BlockNode insertBlock = null;
+		Edge insertEdge = null;
 		boolean confirm = false;
-		// process special cases
-		if (loopExit == exit) {
-			// try/catch at loop end
-			BlockNode source = exitEdge.getSource();
-			if (source.contains(AType.CATCH_BLOCK)
-					&& source.getSuccessors().size() == 2) {
-				BlockNode other = BlockUtils.selectOther(loopExit, source.getSuccessors());
-				if (other != null) {
-					other = BlockUtils.skipSyntheticSuccessor(other);
-					if (other.contains(AType.EXC_HANDLER)) {
-						insertBlock = source;
-						confirm = true;
-					}
-				}
+		// process special cases:
+		// 1. jump to outer loop
+		BlockNode exitEnd = BlockUtils.followEmptyPath(exit);
+		List<LoopInfo> loops = exitEnd.getAll(AType.LOOP);
+		for (LoopInfo loopAtEnd : loops) {
+			if (loopAtEnd != loop && loop.hasParent(loopAtEnd)) {
+				insertEdge = exitEdge;
+				confirm = true;
+				break;
 			}
 		}
+
 		if (!confirm) {
+			BlockNode insertBlock = null;
 			while (exit != null) {
 				if (insertBlock != null && isPathExists(loopExit, exit)) {
 					// found cross
 					if (canInsertBreak(insertBlock)) {
+						insertEdge = new Edge(insertBlock, insertBlock.getSuccessors().get(0));
 						confirm = true;
 						break;
 					}
@@ -493,7 +508,7 @@ public class RegionMaker {
 		}
 		InsnNode breakInsn = new InsnNode(InsnType.BREAK, 0);
 		breakInsn.addAttr(AType.LOOP, loop);
-		EdgeInsnAttr.addEdgeInsn(insertBlock, insertBlock.getSuccessors().get(0), breakInsn);
+		EdgeInsnAttr.addEdgeInsn(insertEdge, breakInsn);
 		stack.addExit(exit);
 		// add label to 'break' if needed
 		addBreakLabel(exitEdge, exit, breakInsn);
@@ -591,7 +606,7 @@ public class RegionMaker {
 		synchRegion.getSubBlocks().add(block);
 		curRegion.getSubBlocks().add(synchRegion);
 
-		Set<BlockNode> exits = new HashSet<>();
+		Set<BlockNode> exits = new LinkedHashSet<>();
 		Set<BlockNode> cacheSet = new HashSet<>();
 		traverseMonitorExits(synchRegion, insn.getArg(0), block, exits, cacheSet);
 
@@ -625,7 +640,7 @@ public class RegionMaker {
 			for (BlockNode exitBlock : exits) {
 				// don't add exit blocks which leads to method end blocks ('return', 'throw', etc)
 				List<BlockNode> list = BlockUtils.buildSimplePath(exitBlock);
-				if (list.isEmpty() || !list.get(list.size() - 1).getSuccessors().isEmpty()) {
+				if (list.isEmpty() || !BlockUtils.isExitBlock(mth, Utils.last(list))) {
 					stack.addExit(exitBlock);
 					// we can still try using this as an exit block to make sure it's visited.
 					exit = exitBlock;
@@ -692,7 +707,7 @@ public class RegionMaker {
 			return ifnode.getThenBlock();
 		}
 
-		IfInfo currentIf = makeIfInfo(block);
+		IfInfo currentIf = makeIfInfo(mth, block);
 		if (currentIf == null) {
 			return null;
 		}
@@ -710,7 +725,7 @@ public class RegionMaker {
 			if (currentIf.getMergedBlocks().size() <= 1) {
 				return null;
 			}
-			currentIf = makeIfInfo(block);
+			currentIf = makeIfInfo(mth, block);
 			currentIf = IfMakerHelper.restructureIf(mth, block, currentIf);
 			if (currentIf == null) {
 				// all attempts failed
@@ -720,8 +735,7 @@ public class RegionMaker {
 		confirmMerge(currentIf);
 
 		IfRegion ifRegion = new IfRegion(currentRegion);
-		ifRegion.setCondition(currentIf.getCondition());
-		ifRegion.setConditionBlocks(currentIf.getMergedBlocks());
+		ifRegion.updateCondition(currentIf);
 		currentRegion.getSubBlocks().add(ifRegion);
 
 		BlockNode outBlock = currentIf.getOutBlock();
@@ -757,9 +771,6 @@ public class RegionMaker {
 
 	private void addEdgeInsn(IfInfo ifInfo, Region region, EdgeInsnAttr edgeInsnAttr) {
 		BlockNode start = edgeInsnAttr.getStart();
-		if (start.contains(AFlag.ADDED_TO_REGION)) {
-			return;
-		}
 		boolean fromThisIf = false;
 		for (BlockNode ifBlock : ifInfo.getMergedBlocks()) {
 			if (ifBlock.getSuccessors().contains(start)) {
@@ -788,52 +799,32 @@ public class RegionMaker {
 			keys.add(SwitchRegion.DEFAULT_CASE_KEY);
 		}
 
-		// search 'out' block - 'next' block after whole switch statement
-		BlockNode out;
-		LoopInfo loop = mth.getLoopForBlock(block);
-		if (loop == null) {
-			out = calcPostDomOut(mth, block, mth.getExitBlocks());
-		} else {
-			BlockNode loopEnd = loop.getEnd();
-			stack.addExit(loop.getStart());
-			if (stack.containsExit(block)
-					|| block == loopEnd
-					|| loopEnd.getPredecessors().contains(block)) {
-				// in exits or last insn in loop => no 'out' block
-				out = null;
-			} else {
-				// treat 'continue' as exit
-				out = calcPostDomOut(mth, block, loopEnd.getPredecessors());
-				if (out != null) {
-					insertContinueInSwitch(block, out, loopEnd);
-				} else {
-					// no 'continue'
-					out = calcPostDomOut(mth, block, Collections.singletonList(loopEnd));
-				}
-			}
-			if (out == loop.getStart()) {
-				// no other outs instead back edge to loop start
-				out = null;
-			}
-		}
-		if (out != null && processedBlocks.get(out.getId())) {
-			// out block already processed, prevent endless loop
-			throw new JadxRuntimeException("Failed to find switch 'out' block");
-		}
-
 		SwitchRegion sw = new SwitchRegion(currentRegion, block);
+		insn.addAttr(new RegionRefAttr(sw));
 		currentRegion.getSubBlocks().add(sw);
 		stack.push(sw);
+
+		BlockNode out = calcSwitchOut(block, stack);
 		stack.addExit(out);
 
-		// detect fallthrough cases
+		processFallThroughCases(sw, out, stack, blocksMap);
+		removeEmptyCases(insn, sw, defCase);
+
+		stack.pop();
+		return out;
+	}
+
+	private void processFallThroughCases(SwitchRegion sw, @Nullable BlockNode out,
+			RegionStack stack, Map<BlockNode, List<Object>> blocksMap) {
 		Map<BlockNode, BlockNode> fallThroughCases = new LinkedHashMap<>();
 		if (out != null) {
+			// detect fallthrough cases
 			BitSet caseBlocks = BlockUtils.blocksToBitSet(mth, blocksMap.keySet());
 			caseBlocks.clear(out.getId());
-			for (BlockNode successor : block.getCleanSuccessors()) {
-				BlockNode fallThroughBlock = searchFallThroughCase(successor, out, caseBlocks);
-				if (fallThroughBlock != null) {
+			for (BlockNode successor : sw.getHeader().getCleanSuccessors()) {
+				BitSet df = successor.getDomFrontier();
+				if (df.intersects(caseBlocks)) {
+					BlockNode fallThroughBlock = getOneIntersectionBlock(out, caseBlocks, df);
 					fallThroughCases.put(successor, fallThroughBlock);
 				}
 			}
@@ -841,7 +832,7 @@ public class RegionMaker {
 			if (!fallThroughCases.isEmpty() && isBadCasesOrder(blocksMap, fallThroughCases)) {
 				Map<BlockNode, List<Object>> newBlocksMap = reOrderSwitchCases(blocksMap, fallThroughCases);
 				if (isBadCasesOrder(newBlocksMap, fallThroughCases)) {
-					mth.addComment("JADX INFO: Can't fix incorrect switch cases order, some code will duplicate");
+					mth.addWarnComment("Can't fix incorrect switch cases order, some code will duplicate");
 					fallThroughCases.clear();
 				} else {
 					blocksMap = newBlocksMap;
@@ -867,26 +858,6 @@ public class RegionMaker {
 				// 'break' instruction will be inserted in RegionMakerVisitor.PostRegionVisitor
 			}
 		}
-
-		removeEmptyCases(insn, sw, defCase);
-
-		stack.pop();
-		return out;
-	}
-
-	@Nullable
-	private BlockNode searchFallThroughCase(BlockNode successor, BlockNode out, BitSet caseBlocks) {
-		BitSet df = successor.getDomFrontier();
-		if (df.intersects(caseBlocks)) {
-			return getOneIntersectionBlock(out, caseBlocks, df);
-		}
-		Set<BlockNode> allPathsBlocks = BlockUtils.getAllPathsBlocks(successor, out);
-		Map<BlockNode, BitSet> bitSetMap = BlockUtils.calcPartialPostDominance(mth, allPathsBlocks, out);
-		BitSet pdoms = bitSetMap.get(successor);
-		if (pdoms != null && pdoms.intersects(caseBlocks)) {
-			return getOneIntersectionBlock(out, caseBlocks, pdoms);
-		}
-		return null;
 	}
 
 	@Nullable
@@ -897,35 +868,82 @@ public class RegionMaker {
 		return BlockUtils.bitSetToOneBlock(mth, caseExits);
 	}
 
-	@Nullable
-	private static BlockNode calcPostDomOut(MethodNode mth, BlockNode block, List<BlockNode> exits) {
-		if (exits.size() == 1 && mth.getExitBlocks().equals(exits)) {
-			// simple case: for only one exit which is equal to method exit block
-			return BlockUtils.calcImmediatePostDominator(mth, block);
-		}
-		// fast search: union of blocks dominance frontier
-		// work if no fallthrough cases and no returns inside switch
-		BitSet outs = BlockUtils.copyBlocksBitSet(mth, block.getDomFrontier());
+	private @Nullable BlockNode calcSwitchOut(BlockNode block, RegionStack stack) {
+		// union of case blocks dominance frontier
+		// works if no fallthrough cases and no returns inside switch
+		BitSet outs = BlockUtils.newBlocksBitSet(mth);
 		for (BlockNode s : block.getCleanSuccessors()) {
+			if (s.contains(AFlag.LOOP_END)) {
+				// loop end dom frontier is loop start, ignore it
+				continue;
+			}
 			outs.or(s.getDomFrontier());
 		}
 		outs.clear(block.getId());
+		outs.clear(mth.getExitBlock().getId());
+		if (outs.isEmpty()) {
+			// switch already contains method exit
+			// add everything, out block not needed
+			return mth.getExitBlock();
+		}
 
-		if (outs.cardinality() != 1) {
-			// slow search: calculate partial post-dominance for every exit node
-			BitSet ipdoms = BlockUtils.newBlocksBitSet(mth);
-			for (BlockNode exitBlock : exits) {
-				if (BlockUtils.isAnyPathExists(block, exitBlock)) {
-					Set<BlockNode> pathBlocks = BlockUtils.getAllPathsBlocks(block, exitBlock);
-					BlockNode ipdom = BlockUtils.calcPartialImmediatePostDominator(mth, block, pathBlocks, exitBlock);
-					if (ipdom != null) {
-						ipdoms.set(ipdom.getId());
+		BlockNode out = null;
+		if (outs.cardinality() == 1) {
+			// single exit
+			out = BlockUtils.bitSetToOneBlock(mth, outs);
+		} else {
+			// several switch exits
+			// possible 'return', 'continue' or fallthrough in one of the cases
+			LoopInfo loop = mth.getLoopForBlock(block);
+			if (loop != null) {
+				outs.andNot(loop.getStart().getPostDoms());
+				outs.andNot(loop.getEnd().getPostDoms());
+				BlockNode loopEnd = loop.getEnd();
+				if (outs.cardinality() == 2 && outs.get(loopEnd.getId())) {
+					// insert 'continue' for cases lead to loop end
+					// expect only 2 exits: loop end and switch out
+					List<BlockNode> outList = BlockUtils.bitSetToBlocks(mth, outs);
+					outList.remove(loopEnd);
+					BlockNode possibleOut = Utils.getOne(outList);
+					if (possibleOut != null && insertContinueInSwitch(block, possibleOut, loopEnd)) {
+						outs.clear(loopEnd.getId());
+						out = possibleOut;
 					}
 				}
 			}
-			outs.and(ipdoms);
+			if (out == null) {
+				BlockNode imPostDom = block.getIPostDom();
+				if (outs.get(imPostDom.getId())) {
+					out = imPostDom;
+				} else {
+					outs.andNot(block.getPostDoms());
+					out = BlockUtils.bitSetToOneBlock(mth, outs);
+				}
+			}
 		}
-		return BlockUtils.bitSetToOneBlock(mth, outs);
+		if (out != null && mth.isPreExitBlock(out)) {
+			// include 'return' or 'throw' in case blocks
+			out = mth.getExitBlock();
+		}
+		BlockNode imPostDom = block.getIPostDom();
+		if (out != imPostDom && !mth.isPreExitBlock(imPostDom)) {
+			// stop other paths at common exit
+			stack.addExit(imPostDom);
+		}
+		if (block.getCleanSuccessors().contains(imPostDom)) {
+			// add exit to stop on empty 'default' block
+			stack.addExit(imPostDom);
+		}
+		if (out == null) {
+			mth.addWarnComment("Failed to find 'out' block for switch in " + block + ". Please report as an issue.");
+			// fallback option; should work in most cases
+			out = block.getIPostDom();
+		}
+		if (out != null && processedBlocks.get(out.getId())) {
+			// 'out' block already processed, prevent endless loop
+			throw new JadxRuntimeException("Failed to find switch 'out' block (already processed)");
+		}
+		return out;
 	}
 
 	/**
@@ -992,39 +1010,42 @@ public class RegionMaker {
 		return newBlocksMap;
 	}
 
-	private static void insertContinueInSwitch(BlockNode block, BlockNode out, BlockNode end) {
-		int endId = end.getId();
-		for (BlockNode s : block.getCleanSuccessors()) {
-			if (s.getDomFrontier().get(endId) && s != out) {
+	private boolean insertContinueInSwitch(BlockNode switchBlock, BlockNode switchOut, BlockNode loopEnd) {
+		boolean inserted = false;
+		for (BlockNode caseBlock : switchBlock.getCleanSuccessors()) {
+			if (caseBlock.getDomFrontier().get(loopEnd.getId()) && caseBlock != switchOut) {
 				// search predecessor of loop end on path from this successor
-				List<BlockNode> list = BlockUtils.collectBlocksDominatedBy(s, s);
-				for (BlockNode p : end.getPredecessors()) {
-					if (list.contains(p)) {
-						if (p.isSynthetic()) {
-							p.getInstructions().add(new InsnNode(InsnType.CONTINUE, 0));
+				Set<BlockNode> list = new HashSet<>(BlockUtils.collectBlocksDominatedBy(mth, caseBlock, caseBlock));
+				if (list.contains(switchOut) || switchOut.getPredecessors().stream().anyMatch(list::contains)) {
+					// 'continue' not needed
+				} else {
+					for (BlockNode p : loopEnd.getPredecessors()) {
+						if (list.contains(p)) {
+							if (p.isSynthetic()) {
+								p.getInstructions().add(new InsnNode(InsnType.CONTINUE, 0));
+								inserted = true;
+							}
+							break;
 						}
-						break;
 					}
 				}
 			}
 		}
+		return inserted;
 	}
 
 	public IRegion processTryCatchBlocks(MethodNode mth) {
-		Set<TryCatchBlock> tcs = new HashSet<>();
-		for (ExceptionHandler handler : mth.getExceptionHandlers()) {
-			tcs.add(handler.getTryBlock());
-		}
-		for (TryCatchBlock tc : tcs) {
+		List<TryCatchBlockAttr> tcs = mth.getAll(AType.TRY_BLOCKS_LIST);
+		for (TryCatchBlockAttr tc : tcs) {
 			List<BlockNode> blocks = new ArrayList<>(tc.getHandlersCount());
 			Set<BlockNode> splitters = new HashSet<>();
 			for (ExceptionHandler handler : tc.getHandlers()) {
 				BlockNode handlerBlock = handler.getHandlerBlock();
 				if (handlerBlock != null) {
 					blocks.add(handlerBlock);
-					splitters.addAll(handlerBlock.getPredecessors());
+					splitters.add(BlockUtils.getTopSplitterForHandler(handlerBlock));
 				} else {
-					LOG.debug(ErrorsCounter.formatMsg(mth, "No exception handler block: " + handler));
+					mth.addDebugComment("No exception handler block: " + handler);
 				}
 			}
 			Set<BlockNode> exits = new HashSet<>();
@@ -1035,7 +1056,7 @@ public class RegionMaker {
 					}
 					List<BlockNode> s = splitter.getSuccessors();
 					if (s.isEmpty()) {
-						LOG.debug(ErrorsCounter.formatMsg(mth, "No successors for splitter: " + splitter));
+						mth.addDebugComment("No successors for splitter: " + splitter);
 						continue;
 					}
 					BlockNode ss = s.get(0);
@@ -1055,12 +1076,12 @@ public class RegionMaker {
 	/**
 	 * Search handlers successor blocks not included in any region.
 	 */
-	protected IRegion processHandlersOutBlocks(MethodNode mth, Set<TryCatchBlock> tcs) {
+	protected IRegion processHandlersOutBlocks(MethodNode mth, List<TryCatchBlockAttr> tcs) {
 		Set<IBlock> allRegionBlocks = new HashSet<>();
 		RegionUtils.getAllRegionBlocks(mth.getRegion(), allRegionBlocks);
 
 		Set<IBlock> succBlocks = new HashSet<>();
-		for (TryCatchBlock tc : tcs) {
+		for (TryCatchBlockAttr tc : tcs) {
 			for (ExceptionHandler handler : tc.getHandlers()) {
 				IContainer region = handler.getHandlerRegion();
 				if (region != null) {
@@ -1093,11 +1114,7 @@ public class RegionMaker {
 		RegionStack stack = new RegionStack(this.mth);
 		BlockNode dom;
 		if (handler.isFinally()) {
-			SplitterBlockAttr splitterAttr = start.get(AType.SPLITTER_BLOCK);
-			if (splitterAttr == null) {
-				return;
-			}
-			dom = splitterAttr.getBlock();
+			dom = BlockUtils.getTopSplitterForHandler(start);
 		} else {
 			dom = start;
 			stack.addExits(exits);
@@ -1131,13 +1148,13 @@ public class RegionMaker {
 		if (b1 == null || b2 == null) {
 			return false;
 		}
-		return isEqualReturnBlocks(b1, b2) || isSyntheticPath(b1, b2);
+		return isEqualReturnBlocks(b1, b2) || isEmptySyntheticPath(b1, b2);
 	}
 
-	private static boolean isSyntheticPath(BlockNode b1, BlockNode b2) {
-		BlockNode n1 = skipSyntheticSuccessor(b1);
-		BlockNode n2 = skipSyntheticSuccessor(b2);
-		return (n1 != b1 || n2 != b2) && isEqualPaths(n1, n2);
+	private static boolean isEmptySyntheticPath(BlockNode b1, BlockNode b2) {
+		BlockNode n1 = followEmptyPath(b1);
+		BlockNode n2 = followEmptyPath(b2);
+		return n1 == n2 || isEqualReturnBlocks(n1, n2);
 	}
 
 	public static boolean isEqualReturnBlocks(BlockNode b1, BlockNode b2) {
@@ -1154,6 +1171,17 @@ public class RegionMaker {
 		if (i1.getArgsCount() != i2.getArgsCount()) {
 			return false;
 		}
-		return i1.getArgsCount() == 0 || i1.getArg(0).equals(i2.getArg(0));
+		if (i1.getArgsCount() == 0) {
+			return true;
+		}
+		InsnArg firstArg = i1.getArg(0);
+		InsnArg secondArg = i2.getArg(0);
+		if (firstArg.isSameConst(secondArg)) {
+			return true;
+		}
+		if (i1.getSourceLine() != i2.getSourceLine()) {
+			return false;
+		}
+		return firstArg.equals(secondArg);
 	}
 }

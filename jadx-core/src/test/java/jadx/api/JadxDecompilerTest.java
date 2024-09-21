@@ -1,15 +1,19 @@
 package jadx.api;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URL;
+import java.util.List;
 
-import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 
 import jadx.core.utils.files.FileUtils;
+import jadx.core.xmlgen.ResContainer;
+import jadx.plugins.input.dex.DexInputPlugin;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.notNullValue;
+import static jadx.tests.api.utils.assertj.JadxAssertions.assertThat;
 
 public class JadxDecompilerTest {
 
@@ -33,8 +37,48 @@ public class JadxDecompilerTest {
 				System.out.println(cls.getCode());
 			}
 
-			assertThat(jadx.getClasses(), Matchers.hasSize(3));
-			assertThat(jadx.getErrorsCount(), Matchers.is(0));
+			assertThat(jadx.getClasses()).hasSize(3);
+			assertThat(jadx.getErrorsCount()).isEqualTo(0);
+		}
+	}
+
+	@Test
+	public void testDirectDexInput() throws IOException {
+		try (JadxDecompiler jadx = new JadxDecompiler();
+				InputStream in = new FileInputStream(getFileFromSampleDir("hello.dex"))) {
+			jadx.addCustomCodeLoader(new DexInputPlugin().loadDexFromInputStream(in, "input"));
+			jadx.load();
+			for (JavaClass cls : jadx.getClasses()) {
+				System.out.println(cls.getCode());
+			}
+			assertThat(jadx.getClasses()).hasSize(1);
+			assertThat(jadx.getErrorsCount()).isEqualTo(0);
+		}
+	}
+
+	@Test
+	public void testResourcesLoad() {
+		File sampleApk = getFileFromSampleDir("app-with-fake-dex.apk");
+		File outDir = FileUtils.createTempDir("jadx-usage-example-2").toFile();
+
+		JadxArgs args = new JadxArgs();
+		args.getInputFiles().add(sampleApk);
+		args.setOutDir(outDir);
+		args.setSkipSources(true);
+		try (JadxDecompiler jadx = new JadxDecompiler(args)) {
+			jadx.load();
+			List<ResourceFile> resources = jadx.getResources();
+			assertThat(resources).hasSize(8);
+			ResourceFile arsc = resources.stream()
+					.filter(r -> r.getType() == ResourceType.ARSC)
+					.findFirst().orElseThrow();
+			ResContainer resContainer = arsc.loadContent();
+			ResContainer xmlRes = resContainer.getSubFiles().stream()
+					.filter(r -> r.getName().equals("res/values/colors.xml"))
+					.findFirst().orElseThrow();
+			assertThat(xmlRes.getText())
+					.code()
+					.containsOne("<color name=\"colorPrimary\">#008577</color>");
 		}
 	}
 
@@ -42,7 +86,7 @@ public class JadxDecompilerTest {
 
 	public static File getFileFromSampleDir(String fileName) {
 		URL resource = JadxDecompilerTest.class.getClassLoader().getResource(TEST_SAMPLES_DIR + fileName);
-		assertThat(resource, notNullValue());
+		assertThat(resource).isNotNull();
 		String pathStr = resource.getFile();
 		return new File(pathStr);
 	}

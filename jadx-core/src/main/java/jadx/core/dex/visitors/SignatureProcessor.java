@@ -1,8 +1,13 @@
 package jadx.core.dex.visitors;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+
+import org.jetbrains.annotations.Nullable;
 
 import jadx.core.dex.info.MethodInfo;
 import jadx.core.dex.instructions.args.ArgType;
@@ -16,10 +21,7 @@ import jadx.core.dex.visitors.typeinference.TypeCompareEnum;
 import jadx.core.utils.Utils;
 import jadx.core.utils.exceptions.JadxException;
 
-import static java.util.Collections.unmodifiableList;
-
 public class SignatureProcessor extends AbstractVisitor {
-
 	private RootNode root;
 
 	@Override
@@ -46,32 +48,106 @@ public class SignatureProcessor extends AbstractVisitor {
 		}
 		try {
 			List<ArgType> generics = sp.consumeGenericTypeParameters();
-			ArgType superClass = validateClsType(cls, sp.consumeType(), cls.getSuperClass());
-			List<ArgType> interfaces = cls.getInterfaces();
-			for (int i = 0; i < interfaces.size(); i++) {
-				ArgType type = sp.consumeType();
-				if (type != null) {
-					interfaces.set(i, validateClsType(cls, type, interfaces.get(i)));
-				} else {
-					break;
-				}
-			}
-			cls.updateGenericClsData(superClass, interfaces, generics);
+			ArgType superClass = processSuperType(cls, sp.consumeType());
+			List<ArgType> interfaces = processInterfaces(cls, sp.consumeTypeList());
+			List<ArgType> resultGenerics = fixTypeParamDeclarations(cls, generics, superClass, interfaces);
+			cls.updateGenericClsData(resultGenerics, superClass, interfaces);
 		} catch (Exception e) {
 			cls.addWarnComment("Failed to parse class signature: " + sp.getSignature(), e);
 		}
 	}
 
-	private ArgType validateClsType(ClassNode cls, ArgType candidateType, ArgType currentType) {
+	private ArgType processSuperType(ClassNode cls, ArgType parsedType) {
+		ArgType superType = cls.getSuperClass();
+		if (Objects.equals(parsedType.getObject(), cls.getClassInfo().getType().getObject())) {
+			cls.addWarnComment("Incorrect class signature: super class is equals to this class");
+			return superType;
+		}
+		return bestClsType(cls, parsedType, superType);
+	}
+
+	/**
+	 * Parse, validate and update class interfaces types.
+	 */
+	private List<ArgType> processInterfaces(ClassNode cls, List<ArgType> parsedTypes) {
+		List<ArgType> interfaces = cls.getInterfaces();
+		if (parsedTypes.isEmpty()) {
+			return interfaces;
+		}
+		int parsedCount = parsedTypes.size();
+		int interfacesCount = interfaces.size();
+		List<ArgType> result = new ArrayList<>(interfacesCount);
+		int count = Math.min(interfacesCount, parsedCount);
+		for (int i = 0; i < interfacesCount; i++) {
+			if (i < count) {
+				result.add(bestClsType(cls, parsedTypes.get(i), interfaces.get(i)));
+			} else {
+				result.add(interfaces.get(i));
+			}
+		}
+		if (interfacesCount < parsedCount) {
+			cls.addWarnComment("Unexpected interfaces in signature: " + parsedTypes.subList(interfacesCount, parsedCount));
+		}
+		return result;
+	}
+
+	/**
+	 * Add missing type parameters from super type and interfaces to make code compilable
+	 */
+	private static List<ArgType> fixTypeParamDeclarations(ClassNode cls,
+			List<ArgType> generics, ArgType superClass, List<ArgType> interfaces) {
+		if (interfaces.isEmpty() && superClass.equals(ArgType.OBJECT)) {
+			return generics;
+		}
+		Set<String> typeParams = new HashSet<>();
+		superClass.visitTypes(t -> addGenericType(typeParams, t));
+		interfaces.forEach(i -> i.visitTypes(t -> addGenericType(typeParams, t)));
+		if (typeParams.isEmpty()) {
+			return generics;
+		}
+		List<ArgType> knownTypeParams;
+		if (cls.isInner()) {
+			knownTypeParams = new ArrayList<>(generics);
+			cls.visitParentClasses(p -> knownTypeParams.addAll(p.getGenericTypeParameters()));
+		} else {
+			knownTypeParams = generics;
+		}
+		for (ArgType declTypeParam : knownTypeParams) {
+			typeParams.remove(declTypeParam.getObject());
+		}
+		if (typeParams.isEmpty()) {
+			return generics;
+		}
+		cls.addInfoComment("Add missing generic type declarations: " + typeParams);
+		List<ArgType> fixedGenerics = new ArrayList<>(generics.size() + typeParams.size());
+		fixedGenerics.addAll(generics);
+		typeParams.stream().sorted().map(ArgType::genericType).forEach(fixedGenerics::add);
+		return fixedGenerics;
+	}
+
+	private static @Nullable Object addGenericType(Set<String> usedTypeParameters, ArgType t) {
+		if (t.isGenericType()) {
+			usedTypeParameters.add(t.getObject());
+		}
+		return null;
+	}
+
+	private ArgType bestClsType(ClassNode cls, ArgType candidateType, ArgType currentType) {
+		if (validateClsType(cls, candidateType)) {
+			return candidateType;
+		}
+		return currentType;
+	}
+
+	private boolean validateClsType(ClassNode cls, ArgType candidateType) {
+		if (candidateType == null) {
+			return false;
+		}
 		if (!candidateType.isObject()) {
-			cls.addWarnComment("Incorrect class signature, class is not object: " + SignatureParser.getSignature(cls));
-			return currentType;
+			cls.addWarnComment("Incorrect class signature, class is not an object: " + candidateType);
+			return false;
 		}
-		if (Objects.equals(candidateType.getObject(), cls.getClassInfo().getType().getObject())) {
-			cls.addWarnComment("Incorrect class signature, class is equals to this class: " + SignatureParser.getSignature(cls));
-			return currentType;
-		}
-		return candidateType;
+		return true;
 	}
 
 	private void parseFieldSignature(FieldNode field) {
@@ -81,11 +157,15 @@ public class SignatureProcessor extends AbstractVisitor {
 		}
 		ClassNode cls = field.getParentClass();
 		try {
-			ArgType gType = sp.consumeType();
-			if (gType == null) {
+			ArgType signatureType = sp.consumeType();
+			if (signatureType == null) {
 				return;
 			}
-			ArgType type = root.getTypeUtils().expandTypeVariables(cls, gType);
+			if (!validateInnerType(signatureType)) {
+				field.addWarnComment("Incorrect inner types in field signature: " + sp.getSignature());
+				return;
+			}
+			ArgType type = root.getTypeUtils().expandTypeVariables(cls, signatureType);
 			if (!validateParsedType(type, field.getType())) {
 				cls.addWarnComment("Incorrect field signature: " + sp.getSignature());
 				return;
@@ -106,22 +186,40 @@ public class SignatureProcessor extends AbstractVisitor {
 			List<ArgType> parsedArgTypes = sp.consumeMethodArgs(mth.getMethodInfo().getArgsCount());
 			ArgType parsedRetType = sp.consumeType();
 
-			if (!validateParsedType(parsedRetType, mth.getMethodInfo().getReturnType())) {
-				mth.addWarnComment("Incorrect return type in method signature: " + sp.getSignature());
+			if (!validateInnerType(parsedRetType) || !validateInnerType(parsedArgTypes)) {
+				mth.addWarnComment("Incorrect inner types in method signature: " + sp.getSignature());
 				return;
 			}
-			List<ArgType> checkedArgTypes = checkArgTypes(mth, sp, parsedArgTypes);
-			if (checkedArgTypes == null) {
-				return;
-			}
-			mth.updateTypeParameters(typeParameters); // apply before expand args
 
+			mth.updateTypeParameters(typeParameters); // apply before expand args
 			TypeUtils typeUtils = root.getTypeUtils();
 			ArgType retType = typeUtils.expandTypeVariables(mth, parsedRetType);
-			List<ArgType> resultArgTypes = Utils.collectionMap(checkedArgTypes, t -> typeUtils.expandTypeVariables(mth, t));
-			mth.updateTypes(unmodifiableList(resultArgTypes), retType);
+			List<ArgType> argTypes = Utils.collectionMap(parsedArgTypes, t -> typeUtils.expandTypeVariables(mth, t));
+
+			if (!validateAndApplyTypes(mth, sp, retType, argTypes)) {
+				// bad types -> reset typed parameters
+				mth.updateTypeParameters(Collections.emptyList());
+			}
 		} catch (Exception e) {
 			mth.addWarnComment("Failed to parse method signature: " + sp.getSignature(), e);
+		}
+	}
+
+	private boolean validateAndApplyTypes(MethodNode mth, SignatureParser sp, ArgType retType, List<ArgType> argTypes) {
+		try {
+			if (!validateParsedType(retType, mth.getMethodInfo().getReturnType())) {
+				mth.addWarnComment("Incorrect return type in method signature: " + sp.getSignature());
+				return false;
+			}
+			List<ArgType> checkedArgTypes = checkArgTypes(mth, sp, argTypes);
+			if (checkedArgTypes == null) {
+				return false;
+			}
+			mth.updateTypes(Collections.unmodifiableList(checkedArgTypes), retType);
+			return true;
+		} catch (Exception e) {
+			mth.addWarnComment("Type validation failed for signature: " + sp.getSignature(), e);
+			return false;
 		}
 	}
 
@@ -136,13 +234,13 @@ public class SignatureProcessor extends AbstractVisitor {
 			}
 			if (mthInfo.isConstructor() && !mthArgTypes.isEmpty() && !parsedArgTypes.isEmpty()) {
 				// add synthetic arg for outer class (see test TestGeneric8)
-				ArrayList<ArgType> newArgTypes = new ArrayList<>(parsedArgTypes);
+				List<ArgType> newArgTypes = new ArrayList<>(parsedArgTypes);
 				newArgTypes.add(0, mthArgTypes.get(0));
 				if (newArgTypes.size() == mthArgTypes.size()) {
 					return newArgTypes;
 				}
 			}
-			mth.addWarnComment("Incorrect args count in method signature: " + sp.getSignature());
+			mth.addDebugComment("Incorrect args count in method signature: " + sp.getSignature());
 			return null;
 		}
 		for (int i = 0; i < len; i++) {
@@ -159,5 +257,60 @@ public class SignatureProcessor extends AbstractVisitor {
 	private boolean validateParsedType(ArgType parsedType, ArgType currentType) {
 		TypeCompareEnum result = root.getTypeCompare().compareTypes(parsedType, currentType);
 		return result != TypeCompareEnum.CONFLICT;
+	}
+
+	private boolean validateInnerType(List<ArgType> types) {
+		for (ArgType type : types) {
+			if (!validateInnerType(type)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private boolean validateInnerType(ArgType type) {
+		ArgType innerType = type.getInnerType();
+		if (innerType == null) {
+			return true;
+		}
+		// check in outer type has inner type as inner class
+		ArgType outerType = type.getOuterType();
+		ClassNode outerCls = root.resolveClass(outerType);
+		if (outerCls == null) {
+			// can't check class not found
+			return true;
+		}
+		String innerObj;
+		if (innerType.getOuterType() != null) {
+			innerObj = innerType.getOuterType().getObject();
+			// "next" inner type will be processed at end of method
+		} else {
+			innerObj = innerType.getObject();
+		}
+		if (!innerObj.contains(".")) {
+			// short reference
+			for (ClassNode innerClass : outerCls.getInnerClasses()) {
+				if (innerClass.getShortName().equals(innerObj)) {
+					return true;
+				}
+			}
+			return false;
+		}
+		// full name
+		ClassNode innerCls = root.resolveClass(innerObj);
+		if (innerCls == null) {
+			return false;
+		}
+		if (!innerCls.getParentClass().equals(outerCls)) {
+			// not inner => fixing
+			outerCls.addInnerClass(innerCls);
+			innerCls.getClassInfo().convertToInner(outerCls);
+		}
+		return validateInnerType(innerType);
+	}
+
+	@Override
+	public String getName() {
+		return "SignatureProcessor";
 	}
 }
